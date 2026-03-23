@@ -1,23 +1,18 @@
 <template>
   <div class="conn-bar">
-    <!-- Device selector -->
+    <!-- Device selector with grouped vendors -->
     <el-select
       v-model="selectedDeviceId"
       placeholder="Select device"
       size="small"
-      style="width: 220px"
+      style="width: 230px"
       :loading="loadingDevices"
       @focus="refreshDevices"
       @change="onDeviceChange"
     >
-      <el-option-group v-for="group in deviceGroups" :key="group.label" :label="group.label">
-        <el-option
-          v-for="d in group.devices"
-          :key="d.id"
-          :label="d.label"
-          :value="d.id"
-        >
-          <span :class="`hw-icon hw-${d.type}`">{{ hwIcon(d.type) }}</span>
+      <el-option-group v-for="g in deviceGroups" :key="g.label" :label="g.label">
+        <el-option v-for="d in g.devices" :key="d.id" :label="d.label" :value="d.id">
+          <span class="hw-type-badge" :class="`hw-${d.type}`">{{ hwBadge(d.type) }}</span>
           {{ d.label }}
         </el-option>
       </el-option-group>
@@ -25,56 +20,71 @@
 
     <el-divider direction="vertical" />
 
-    <!-- SocketCAN: channel + bitrate + setup button -->
+    <!-- SocketCAN: interface name + bitrate + setup button -->
     <template v-if="selectedDevice?.type === 'socketcan'">
       <span class="label">Interface</span>
-      <el-input
-        v-model="socketCanChannel"
-        size="small"
-        style="width: 80px"
-        placeholder="can0"
-        @blur="syncFromDevice"
-      />
+      <el-input v-model="socketCanIface" size="small" style="width: 75px" placeholder="can0" />
       <span class="label">Bitrate</span>
-      <el-select v-model="bitrate" size="small" style="width: 110px">
-        <el-option v-for="b in bitrateOptions" :key="b.value" :label="b.label" :value="b.value" />
+      <el-select v-model="bitrate" size="small" style="width: 105px">
+        <el-option v-for="b in bitrateOptions" :key="b.v" :label="b.l" :value="b.v" />
       </el-select>
-      <el-tooltip content="Setup CAN interface (requires sudo)" placement="bottom">
+      <el-tooltip content="Setup Linux CAN interface (requires sudo)" placement="bottom">
         <el-button size="small" :loading="settingUp" @click="setupSocketCan">Setup</el-button>
       </el-tooltip>
     </template>
 
-    <!-- PEAK: channel handle shown, bitrate select, optional CAN-FD -->
-    <template v-else-if="selectedDevice?.type === 'peak'">
+    <!-- SLCAN: serial port path + bitrate (no CAN-FD) -->
+    <template v-else-if="selectedDevice?.type === 'slcan'">
+      <span class="label">Port</span>
+      <el-input
+        v-model="slcanPort"
+        size="small"
+        style="width: 130px"
+        placeholder="/dev/ttyUSB0"
+      />
       <span class="label">Bitrate</span>
-      <el-select v-model="bitrate" size="small" style="width: 110px">
-        <el-option v-for="b in bitrateOptions" :key="b.value" :label="b.label" :value="b.value" />
+      <el-select v-model="bitrate" size="small" style="width: 105px">
+        <el-option v-for="b in slcanBitrateOptions" :key="b.v" :label="b.l" :value="b.v" />
       </el-select>
-      <el-checkbox v-model="canFd" size="small" style="margin-left: 6px">CAN-FD</el-checkbox>
+    </template>
+
+    <!-- All other vendors: bitrate + optional CAN-FD -->
+    <template v-else-if="selectedDevice && selectedDevice.type !== 'simulate'">
+      <span class="label">Bitrate</span>
+      <el-select v-model="bitrate" size="small" style="width: 105px">
+        <el-option v-for="b in bitrateOptions" :key="b.v" :label="b.l" :value="b.v" />
+      </el-select>
+      <el-checkbox
+        v-if="selectedDevice?.canFdCapable"
+        v-model="canFd"
+        size="small"
+        style="margin-left: 4px"
+      >
+        CAN-FD
+      </el-checkbox>
     </template>
 
     <el-divider direction="vertical" />
 
     <!-- TX / RX IDs -->
-    <span class="label">TX ID</span>
-    <el-input v-model="txIdHex" size="small" style="width: 82px" placeholder="0x7E0" />
-    <span class="label">RX ID</span>
-    <el-input v-model="rxIdHex" size="small" style="width: 82px" placeholder="0x7E8" />
+    <span class="label">TX</span>
+    <el-input v-model="txIdHex" size="small" style="width: 80px" placeholder="0x7E0" />
+    <span class="label">RX</span>
+    <el-input v-model="rxIdHex" size="small" style="width: 80px" placeholder="0x7E8" />
 
     <!-- P2 timeout -->
-    <span class="label">P2 (ms)</span>
+    <span class="label">P2 ms</span>
     <el-input-number
       v-model="p2Timeout"
       :min="100"
       :max="10000"
       :step="100"
       size="small"
-      style="width: 110px"
+      style="width: 108px"
     />
 
     <el-divider direction="vertical" />
 
-    <!-- Connect / Disconnect -->
     <el-button
       v-if="!connected"
       type="primary"
@@ -100,12 +110,14 @@ const api = (window as any).udsApi
 interface Device {
   id: string
   label: string
-  type: 'simulate' | 'socketcan' | 'peak'
+  type: string
   channel?: string
   handle?: number
+  serialPort?: string
+  canFdCapable?: boolean
 }
 
-// ── State ────────────────────────────────────────────────────────────────────
+// ── State ─────────────────────────────────────────────────────────────────────
 const devices = ref<Device[]>([])
 const selectedDeviceId = ref('')
 const txIdHex = ref('0x7E0')
@@ -113,43 +125,76 @@ const rxIdHex = ref('0x7E8')
 const p2Timeout = ref(2000)
 const bitrate = ref('500000')
 const canFd = ref(false)
-const socketCanChannel = ref('can0')
+const socketCanIface = ref('can0')
+const slcanPort = ref('/dev/ttyUSB0')
 const connected = ref(false)
 const connecting = ref(false)
 const loadingDevices = ref(false)
 const settingUp = ref(false)
 
+// ── Bitrate options ───────────────────────────────────────────────────────────
 const bitrateOptions = [
-  { label: '1 Mbit/s', value: '1000000' },
-  { label: '800 kbit/s', value: '800000' },
-  { label: '500 kbit/s', value: '500000' },
-  { label: '250 kbit/s', value: '250000' },
-  { label: '125 kbit/s', value: '125000' },
-  { label: '100 kbit/s', value: '100000' },
-  { label: '50 kbit/s', value: '50000' }
+  { l: '1 Mbit/s', v: '1000000' },
+  { l: '800 kbit/s', v: '800000' },
+  { l: '500 kbit/s', v: '500000' },
+  { l: '250 kbit/s', v: '250000' },
+  { l: '125 kbit/s', v: '125000' },
+  { l: '100 kbit/s', v: '100000' },
+  { l: '50 kbit/s', v: '50000' }
 ]
 
-// ── Computed ─────────────────────────────────────────────────────────────────
+// SLCAN supports a subset of bitrates
+const slcanBitrateOptions = [
+  { l: '1 Mbit/s', v: '1000000' },
+  { l: '500 kbit/s', v: '500000' },
+  { l: '250 kbit/s', v: '250000' },
+  { l: '125 kbit/s', v: '125000' },
+  { l: '100 kbit/s', v: '100000' },
+  { l: '50 kbit/s', v: '50000' },
+  { l: '20 kbit/s', v: '20000' },
+  { l: '10 kbit/s', v: '10000' }
+]
+
+// ── Device grouping ───────────────────────────────────────────────────────────
+const GROUP_ORDER: Record<string, string> = {
+  simulate: '① Simulate (no hardware)',
+  socketcan: '② SocketCAN (Linux – all brands)',
+  peak: '③ PEAK (PCAN-TP)',
+  vector: '④ Vector (XL Driver / ETAS ES891)',
+  kvaser: '⑤ Kvaser',
+  zlg: '⑥ ZLG (ZCAN)',
+  candle: '⑦ Candle / CANable (USB)',
+  slcan: '⑧ SLCAN (USB serial – cross-platform)',
+  toomoss: '⑨ TooMoss'
+}
+
+const deviceGroups = computed(() => {
+  const map = new Map<string, { label: string; devices: Device[] }>()
+  for (const [type, label] of Object.entries(GROUP_ORDER)) {
+    map.set(type, { label, devices: [] })
+  }
+  for (const d of devices.value) {
+    const g = map.get(d.type)
+    if (g) g.devices.push(d)
+  }
+  return [...map.values()].filter((g) => g.devices.length > 0)
+})
+
 const selectedDevice = computed<Device | undefined>(() =>
   devices.value.find((d) => d.id === selectedDeviceId.value)
 )
 
-const deviceGroups = computed(() => {
-  const groups: Record<string, { label: string; devices: Device[] }> = {
-    simulate: { label: 'Simulate (no hardware)', devices: [] },
-    socketcan: { label: 'SocketCAN (Linux)', devices: [] },
-    peak: { label: 'PEAK CAN', devices: [] }
-  }
-  for (const d of devices.value) {
-    const key = d.type as keyof typeof groups
-    if (groups[key]) groups[key].devices.push(d)
-  }
-  return Object.values(groups).filter((g) => g.devices.length > 0)
-})
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function hwIcon(type: string): string {
-  return type === 'simulate' ? '⚙' : type === 'socketcan' ? '🔌' : '📡'
+const hwBadge: Record<string, string> = {
+  simulate: 'SIM',
+  socketcan: 'SCN',
+  peak: 'PKK',
+  vector: 'VEC',
+  kvaser: 'KVS',
+  zlg: 'ZLG',
+  candle: 'CDL',
+  slcan: 'SLC',
+  toomoss: 'TMO'
 }
 
 function parseHexId(s: string): number {
@@ -163,7 +208,6 @@ async function refreshDevices() {
   loadingDevices.value = true
   try {
     devices.value = await api.listDevices()
-    // Auto-select first device
     if (devices.value.length && !selectedDeviceId.value) {
       selectedDeviceId.value = devices.value[0].id
       onDeviceChange()
@@ -176,35 +220,18 @@ async function refreshDevices() {
 function onDeviceChange() {
   const d = selectedDevice.value
   if (!d) return
-  if (d.type === 'socketcan' && d.channel) {
-    socketCanChannel.value = d.channel
-  }
-}
-
-function syncFromDevice() {
-  // Sync socketCanChannel back into selected device
-  const d = selectedDevice.value
-  if (d?.type === 'socketcan') {
-    d.channel = socketCanChannel.value
-    d.id = `socketcan-${socketCanChannel.value}`
-    d.label = `SocketCAN  ${socketCanChannel.value}`
-  }
+  if (d.type === 'socketcan' && d.channel) socketCanIface.value = d.channel
+  if (d.type === 'slcan' && d.serialPort) slcanPort.value = d.serialPort
+  canFd.value = false
 }
 
 async function setupSocketCan() {
-  const iface = socketCanChannel.value
-  if (!iface) {
-    ElMessage.error('Enter an interface name (e.g. can0)')
-    return
-  }
+  const iface = socketCanIface.value
+  if (!iface) return
   settingUp.value = true
   try {
-    const result = await api.socketCanSetup(iface, bitrate.value)
-    if (result.success) {
-      ElMessage.success(`${iface} is up at ${bitrate.value} bps`)
-    } else {
-      ElMessage.error(`Setup failed: ${result.output}`)
-    }
+    const r = await api.socketCanSetup(iface, bitrate.value)
+    r.success ? ElMessage.success(`${iface} configured OK`) : ElMessage.error(`Setup: ${r.output}`)
   } finally {
     settingUp.value = false
   }
@@ -212,25 +239,20 @@ async function setupSocketCan() {
 
 async function connect() {
   const device = selectedDevice.value
-  if (!device) {
-    ElMessage.warning('Please select a device')
-    return
-  }
+  if (!device) return ElMessage.warning('Select a device')
 
   connecting.value = true
   try {
     const txId = parseHexId(txIdHex.value)
     const rxId = parseHexId(rxIdHex.value)
 
-    // For SocketCAN, use the (possibly edited) channel name
-    const channel =
-      device.type === 'socketcan' ? socketCanChannel.value : device.channel
+    // Merge edited fields back into device object
+    const devicePayload: Device = { ...device }
+    if (device.type === 'socketcan') devicePayload.channel = socketCanIface.value
+    if (device.type === 'slcan') devicePayload.serialPort = slcanPort.value
 
     const result = await api.connect({
-      deviceId: device.id,
-      deviceType: device.type,
-      channel,
-      handle: device.handle,
+      device: devicePayload,
       txId,
       rxId,
       bitrate: bitrate.value,
@@ -246,7 +268,7 @@ async function connect() {
       ElMessage.error(result.errorMsg || 'Connection failed')
     }
   } catch (e: any) {
-    ElMessage.error(e.message || 'Connection failed')
+    ElMessage.error(e.message)
   } finally {
     connecting.value = false
   }
@@ -280,7 +302,23 @@ onMounted(refreshDevices)
   flex-shrink: 0;
 }
 
-.hw-icon {
+.hw-type-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-radius: 3px;
   margin-right: 4px;
+  font-family: 'Courier New', monospace;
 }
+
+.hw-simulate  { background: #e0f2fe; color: #0369a1; }
+.hw-socketcan { background: #dcfce7; color: #166534; }
+.hw-peak      { background: #fef9c3; color: #854d0e; }
+.hw-vector    { background: #ede9fe; color: #5b21b6; }
+.hw-kvaser    { background: #fee2e2; color: #991b1b; }
+.hw-zlg       { background: #fce7f3; color: #9d174d; }
+.hw-candle    { background: #ffedd5; color: #9a3412; }
+.hw-slcan     { background: #f0fdf4; color: #14532d; }
+.hw-toomoss   { background: #f8fafc; color: #334155; }
 </style>

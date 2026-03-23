@@ -31,12 +31,27 @@ export interface CanHardware {
   sendAndReceive?(txId: number, rxId: number, data: Buffer, timeoutMs: number): Promise<Buffer>
 }
 
+export type HardwareType =
+  | 'simulate'
+  | 'socketcan'
+  | 'peak'
+  | 'vector'
+  | 'kvaser'
+  | 'zlg'
+  | 'candle'
+  | 'slcan'
+  | 'toomoss'
+
 export interface HardwareDevice {
   id: string
   label: string
-  type: 'simulate' | 'socketcan' | 'peak'
+  type: HardwareType
   /** SocketCAN interface name, e.g. 'can0' */
   channel?: string
-  /** PEAK channel handle value, e.g. 0x51 (PCAN_USBBUS1) */
+  /** Device handle (PEAK, Vector, Kvaser, ZLG, Candle, TooMoss) */
   handle?: number
+  /** SLCAN serial port path, e.g. '/dev/ttyUSB0' or 'COM3' */
+  serialPort?: string
+  /** Whether the device supports CAN-FD */
+  canFdCapable?: boolean
 }
