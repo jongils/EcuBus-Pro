@@ -40,7 +40,11 @@ const api = {
   },
 
   // Raw
-  rawRequest: (requestHex: string) => ipcRenderer.invoke('uds:raw', requestHex)
+  rawRequest: (requestHex: string) => ipcRenderer.invoke('uds:raw', requestHex),
+
+  // SocketCAN setup helper (Linux)
+  socketCanSetup: (iface: string, bitrate: string) =>
+    ipcRenderer.invoke('socketcan:setup', { iface, bitrate })
 }
 
 if (process.contextIsolated) {

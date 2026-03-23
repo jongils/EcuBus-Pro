@@ -8,6 +8,18 @@ export interface UdsConfig {
   p2TimeoutMs: number // Default response timeout (ms)
 }
 
+/**
+ * Single UDS transaction.
+ * Automatically uses hw.sendAndReceive when available (e.g. PEAK PCAN-TP),
+ * otherwise falls back to CAN-TP segmentation via send/receive.
+ */
+async function udsRoundTrip(cfg: UdsConfig, request: Buffer): Promise<Buffer> {
+  if (cfg.hw.sendAndReceive) {
+    return cfg.hw.sendAndReceive(cfg.txId, cfg.rxId, request, cfg.p2TimeoutMs)
+  }
+  return udsTransaction(cfg.hw, cfg.txId, cfg.rxId, request, cfg.p2TimeoutMs)
+}
+
 /** Result for any UDS operation */
 export interface UdsResult<T = void> {
   success: boolean
@@ -38,12 +50,12 @@ async function performRequest(
   request: Buffer,
   expectedSid: number
 ): Promise<Buffer> {
-  let response = await udsTransaction(cfg.hw, cfg.txId, cfg.rxId, request, cfg.p2TimeoutMs)
+  let response = await udsRoundTrip(cfg, request)
 
   // Handle 0x78 Response Pending
   let retries = 10
   while (response[0] === 0x7f && response[2] === 0x78 && retries-- > 0) {
-    response = await udsTransaction(cfg.hw, cfg.txId, cfg.rxId, request, 5000)
+    response = await udsRoundTrip(cfg, request)
   }
 
   checkResponse(response, expectedSid)
@@ -326,7 +338,7 @@ export async function runSequence(
 
     try {
       const reqBuf = hexToBuffer(step.requestHex.replace(/\s+/g, ''))
-      const resp = await udsTransaction(cfg.hw, cfg.txId, cfg.rxId, reqBuf, cfg.p2TimeoutMs)
+      const resp = await udsRoundTrip(cfg, reqBuf)
       const responseHex = bufToHex(resp)
 
       if (step.checkResponse && resp[0] === 0x7f) {

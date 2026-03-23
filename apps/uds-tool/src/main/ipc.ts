@@ -1,5 +1,7 @@
 import type { IpcMain, BrowserWindow } from 'electron'
 import { SimulateHardware, getSimulateDevices } from './core/hardware/simulate'
+import { SocketCanHardware, getSocketCanDevices } from './core/hardware/socketcan'
+import { getPeakDevices } from './core/hardware/peak'
 import { CanHardware, HardwareDevice } from './core/hardware/interface'
 import {
   UdsConfig,
@@ -13,7 +15,7 @@ import {
 } from './core/uds-ops'
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Global state
+// Global connection state
 // ─────────────────────────────────────────────────────────────────────────────
 
 let currentHw: CanHardware | null = null
@@ -24,11 +26,9 @@ function getWin(): BrowserWindow | null {
   return (global as any).mainWindow || null
 }
 
-function sendToRenderer(channel: string, data: any) {
+function sendToRenderer(channel: string, data: unknown) {
   const win = getWin()
-  if (win && !win.isDestroyed()) {
-    win.webContents.send(channel, data)
-  }
+  if (win && !win.isDestroyed()) win.webContents.send(channel, data)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -39,36 +39,12 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
   // ── Device discovery ──────────────────────────────────────────────────────
 
   ipcMain.handle('device:list', async (): Promise<HardwareDevice[]> => {
-    const devices: HardwareDevice[] = [...getSimulateDevices()]
-
-    // Try to load socketcan devices (Linux only, optional)
-    try {
-      const { exec } = await import('child_process')
-      const { promisify } = await import('util')
-      const execAsync = promisify(exec)
-      const { stdout } = await execAsync('ip link show type can 2>/dev/null || echo ""')
-      const canIfaces = stdout
-        .split('\n')
-        .filter((l) => l.match(/^\d+: (can\d+)/))
-        .map((l) => {
-          const m = l.match(/^\d+: (can\d+)/)
-          return m ? m[1] : null
-        })
-        .filter(Boolean) as string[]
-
-      for (const iface of canIfaces) {
-        devices.push({
-          id: `socketcan-${iface}`,
-          label: `SocketCAN ${iface}`,
-          type: 'socketcan',
-          channel: iface
-        })
-      }
-    } catch {
-      // socketcan not available
-    }
-
-    return devices
+    const [simulateDevices, socketCanDevices, peakDevices] = await Promise.all([
+      Promise.resolve(getSimulateDevices()),
+      getSocketCanDevices(),
+      getPeakDevices()
+    ])
+    return [...simulateDevices, ...socketCanDevices, ...peakDevices]
   })
 
   // ── Connection management ─────────────────────────────────────────────────
@@ -79,15 +55,18 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
       _,
       params: {
         deviceId: string
-        deviceType: string
+        deviceType: 'simulate' | 'socketcan' | 'peak'
         channel?: string
+        handle?: number
         txId: number
         rxId: number
+        bitrate?: string
+        canFd?: boolean
         p2TimeoutMs: number
       }
     ) => {
       try {
-        // Disconnect existing connection
+        // Close any existing connection first
         if (currentHw) {
           currentHw.close()
           currentHw = null
@@ -100,11 +79,18 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
         if (params.deviceType === 'simulate') {
           hw = new SimulateHardware(params.txId, params.rxId)
         } else if (params.deviceType === 'socketcan') {
-          // Dynamic import for socketcan (optional dependency)
-          const { SocketCanHardware } = await import('./core/hardware/socketcan').catch(() => {
-            throw new Error('SocketCAN module not available. Install socketcan package.')
-          })
-          hw = new SocketCanHardware(params.channel || 'can0', params.txId, params.rxId)
+          if (!params.channel) throw new Error('SocketCAN: channel name required (e.g. can0)')
+          hw = new SocketCanHardware(params.channel)
+        } else if (params.deviceType === 'peak') {
+          if (!params.handle) throw new Error('PEAK: channel handle required')
+          const { PeakCanHardware } = await import('./core/hardware/peak')
+          hw = new PeakCanHardware(
+            params.handle,
+            params.txId,
+            params.rxId,
+            params.bitrate ?? '500000',
+            params.canFd ?? false
+          )
         } else {
           throw new Error(`Unsupported device type: ${params.deviceType}`)
         }
@@ -137,9 +123,7 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
     return { success: true }
   })
 
-  ipcMain.handle('device:status', () => ({
-    connected: isConnected
-  }))
+  ipcMain.handle('device:status', () => ({ connected: isConnected }))
 
   // ── DID operations ────────────────────────────────────────────────────────
 
@@ -172,17 +156,9 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
 
   ipcMain.handle(
     'uds:flash',
-    async (
-      _,
-      params: {
-        fileBase64: string
-        memoryAddress: number
-      }
-    ) => {
+    async (_, params: { fileBase64: string; memoryAddress: number }) => {
       if (!currentCfg) return { success: false, errorMsg: 'Not connected' }
-
       const fileBuffer = Buffer.from(params.fileBase64, 'base64')
-
       return flashECU(currentCfg, fileBuffer, params.memoryAddress, (progress) => {
         sendToRenderer('uds:flashProgress', progress)
       })
@@ -193,7 +169,6 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
 
   ipcMain.handle('uds:runSequence', async (_, steps: SequenceStep[]) => {
     if (!currentCfg) return { success: false, errorMsg: 'Not connected' }
-
     return runSequence(currentCfg, steps, (stepResult) => {
       sendToRenderer('uds:sequenceStepDone', stepResult)
     })
@@ -204,19 +179,50 @@ export function registerIpcHandlers(ipcMain: IpcMain) {
   ipcMain.handle('uds:raw', async (_, requestHex: string) => {
     if (!currentCfg) return { success: false, errorMsg: 'Not connected' }
     try {
-      const { udsTransaction } = await import('./core/cantp')
       const { hexToBuffer, bufToHex } = await import('./core/uds-ops')
       const req = hexToBuffer(requestHex.replace(/\s+/g, ''))
-      const resp = await udsTransaction(
-        currentCfg.hw,
-        currentCfg.txId,
-        currentCfg.rxId,
-        req,
-        currentCfg.p2TimeoutMs
-      )
+
+      let resp: Buffer
+      if (currentCfg.hw.sendAndReceive) {
+        resp = await currentCfg.hw.sendAndReceive(
+          currentCfg.txId,
+          currentCfg.rxId,
+          req,
+          currentCfg.p2TimeoutMs
+        )
+      } else {
+        const { udsTransaction } = await import('./core/cantp')
+        resp = await udsTransaction(
+          currentCfg.hw,
+          currentCfg.txId,
+          currentCfg.rxId,
+          req,
+          currentCfg.p2TimeoutMs
+        )
+      }
+
       return { success: true, responseHex: bufToHex(resp) }
     } catch (e: any) {
       return { success: false, errorMsg: e.message || String(e) }
     }
   })
+
+  // ── SocketCAN interface setup helper ─────────────────────────────────────
+  // Runs: sudo ip link set <iface> type can bitrate <bps> && sudo ip link set <iface> up
+
+  ipcMain.handle(
+    'socketcan:setup',
+    async (_, params: { iface: string; bitrate: string }): Promise<{ success: boolean; output: string }> => {
+      try {
+        const { exec } = await import('child_process')
+        const { promisify } = await import('util')
+        const execAsync = promisify(exec)
+        const cmd = `sudo ip link set ${params.iface} type can bitrate ${params.bitrate} && sudo ip link set ${params.iface} up`
+        const { stdout, stderr } = await execAsync(cmd)
+        return { success: true, output: stdout || stderr || 'OK' }
+      } catch (e: any) {
+        return { success: false, output: e.message }
+      }
+    }
+  )
 }
