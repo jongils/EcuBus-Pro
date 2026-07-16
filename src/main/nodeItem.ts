@@ -1,6 +1,6 @@
 import path from 'path'
 import fs from 'fs'
-import { CanAddr, CanMessage, getTsUs, swapAddr } from './share/can'
+import { CanAddr, CanMessage, formatError, getTsUs, swapAddr } from './share/can'
 import { TesterInfo } from './share/tester'
 import UdsTester, {
   linApiBaudRateCtrl,
@@ -8,10 +8,10 @@ import UdsTester, {
   linApiStartSch,
   linApiStopSch,
   pwmApiSetDuty,
-  SerialPortManager,
-  SerialPortApi
+  SerialApi,
+  SomeipApiCall
 } from './workerClient'
-import { CAN_TP, TpError as CanTpError } from './docan/cantp'
+import { CAN_TP, CAN_TP_SOCKET, TpError as CanTpError } from './docan/cantp'
 import { UdsLOG, VarLOG } from './log'
 import { applyBuffer, getRxPdu, getTxPdu, PwmBaseInfo, ServiceItem, UdsDevice } from './share/uds'
 import { findService, UDSTesterMain } from './docan/uds'
@@ -30,9 +30,11 @@ import logo from './logo.html?raw'
 import fsP from 'fs/promises'
 import type { TestEvent } from 'node:test/reporters'
 import { PwmBase } from './pwm'
+import { SerialBase } from './serial'
+import { SerialMessage } from './share/serial'
 import { setSignal } from './util'
 import { VSomeIP_Client } from './vsomeip'
-import { SomeipMessage } from './share/someip'
+import { SomeipMessage, SomeipMessageType, VsomeipAvailabilityInfo } from './share/someip'
 type TestTree = {
   label: string
   type: 'test' | 'config' | 'log'
@@ -79,22 +81,25 @@ export class NodeClass {
   pool?: UdsTester
   private cantp: CAN_TP[] = []
   private lintp: LIN_TP[] = []
+  private cantpSocketMap: Map<string, { tp: CAN_TP; socket: CAN_TP_SOCKET }> = new Map()
   private linBaseId: string[] = []
   private canBaseId: string[] = []
   private ethBaseId: string[] = []
   private pwmBaseId: string[] = []
+  private serialBaseId: string[] = []
   private someipBaseId: string[] = []
   private startTs = 0
-  private boundCb: (frame: CanMessage | LinMsg | SomeipMessage) => void
+  private boundCb: (frame: CanMessage | LinMsg | SomeipMessage | SerialMessage) => void
+  private boundSomeipServiceValidCb: (info: VsomeipAvailabilityInfo) => void
   private udsTesterMap = new Map<string, UDSTesterMain>()
   private canBaseMap: Map<string, CanBase> = new Map()
   private linBaseMap: Map<string, LinBase> = new Map()
   private doips: DOIP[] = []
   private ethBaseMap: Map<string, EthBaseInfo> = new Map()
   private pwmBaseMap: Map<string, PwmBase> = new Map()
+  private serialBaseMap: Map<string, SerialBase> = new Map()
   private someipMap: Map<string, VSomeIP_Client> = new Map()
   private testers: Record<string, TesterInfo> = {}
-  private serialPortManager?: SerialPortManager
   freeEvent: {
     doip: DOIP
     id: string
@@ -116,6 +121,7 @@ export class NodeClass {
   ) {
     this.varLog = new VarLOG(nodeItem.id)
     this.boundCb = this.cb.bind(this)
+    this.boundSomeipServiceValidCb = this.someipServiceValidCb.bind(this)
     this.startTs = getTsUs()
     if (nodeItem.script) {
       let jsPath = nodeItem.script
@@ -124,7 +130,9 @@ export class NodeClass {
         const outDir = path.join(this.projectPath, '.ScriptBuild')
         jsPath = path.join(outDir, info.name + '.js')
       } else {
-        jsPath = path.join(this.projectPath, jsPath)
+        if (!path.isAbsolute(jsPath)) {
+          jsPath = path.join(this.projectPath, jsPath)
+        }
       }
 
       this.log = new UdsLOG(`${nodeItem.name} ${path.basename(nodeItem.script)}`)
@@ -174,6 +182,7 @@ export class NodeClass {
     ethBaseMap: Map<string, EthBaseInfo>,
     pwmBaseMap: Map<string, PwmBase>,
     someipMap: Map<string, VSomeIP_Client>,
+    serialBaseMap: Map<string, SerialBase>,
     testers: Record<string, TesterInfo>
   ) {
     this.canBaseMap = canBaseMap
@@ -181,6 +190,7 @@ export class NodeClass {
     this.doips = doips
     this.ethBaseMap = ethBaseMap
     this.pwmBaseMap = pwmBaseMap
+    this.serialBaseMap = serialBaseMap
     this.someipMap = someipMap
     this.testers = testers
     this.pool?.buildServiceMap(testers)
@@ -211,10 +221,16 @@ export class NodeClass {
       if (pwmBaseItem) {
         this.pwmBaseId.push(c)
       }
+      const serialBaseItem = this.serialBaseMap.get(c)
+      if (serialBaseItem) {
+        this.serialBaseId.push(c)
+        serialBaseItem.attachSerialMessage(this.boundCb)
+      }
       const someipBaseItem = this.someipMap.get(c)
       if (someipBaseItem) {
         this.someipBaseId.push(c)
         someipBaseItem.attachSomeipMessage(this.boundCb)
+        someipBaseItem.attachSomeipServiceValid(this.boundSomeipServiceValidCb)
       }
     }
     if (this.pool) {
@@ -227,9 +243,8 @@ export class NodeClass {
       this.pool.registerHandler('canApi', this.canApi.bind(this))
       this.pool.registerHandler('stopUdsSeq', this.stopUdsSeq.bind(this))
       this.pool.registerHandler('pwmApi', this.pwmApi.bind(this))
-      // SerialPort API
-      this.serialPortManager = new SerialPortManager(this.pool)
-      this.pool.registerHandler('serialPortApi', this.serialPortApi.bind(this))
+      this.pool.registerHandler('serialApi', this.serialApi.bind(this))
+      this.pool.registerHandler('someipApi', this.someipApi.bind(this))
 
       //cantp
       for (const tester of Object.values(this.testers)) {
@@ -246,7 +261,7 @@ export class NodeClass {
                       //TODO:
                     } else {
                       if (data.addr.uuid != this.nodeItem.id) {
-                        const item = findService(tester, data.data, true)
+                        const item = cloneDeep(findService(tester, data.data, true))
                         if (item) {
                           try {
                             applyBuffer(item, data.data, true)
@@ -270,7 +285,7 @@ export class NodeClass {
                         //TODO:
                       } else {
                         if (data.addr.uuid != this.nodeItem.id) {
-                          const item = findService(tester, data.data, false)
+                          const item = cloneDeep(findService(tester, data.data, false))
                           if (item) {
                             try {
                               applyBuffer(item, data.data, false)
@@ -300,7 +315,7 @@ export class NodeClass {
                       //TODO:
                     } else {
                       if (data.addr.uuid != this.nodeItem.id) {
-                        const item = findService(tester, data.data, true)
+                        const item = cloneDeep(findService(tester, data.data, true))
                         if (item) {
                           try {
                             applyBuffer(item, data.data, true)
@@ -320,7 +335,7 @@ export class NodeClass {
                       //TODO:
                     } else {
                       if (data.addr.uuid != this.nodeItem.id) {
-                        const item = findService(tester, data.data, false)
+                        const item = cloneDeep(findService(tester, data.data, false))
                         if (item) {
                           try {
                             applyBuffer(item, data.data, false)
@@ -355,7 +370,7 @@ export class NodeClass {
                       if (data instanceof DoipError) {
                         //TODO:
                       } else {
-                        const item = findService(tester, data.data, true)
+                        const item = cloneDeep(findService(tester, data.data, true))
                         if (item) {
                           try {
                             applyBuffer(item, data.data, true)
@@ -376,7 +391,7 @@ export class NodeClass {
                       if (data instanceof DoipError) {
                         //TODO:
                       } else {
-                        const item = findService(tester, data.data, false)
+                        const item = cloneDeep(findService(tester, data.data, false))
                         if (item) {
                           try {
                             applyBuffer(item, data.data, false)
@@ -861,11 +876,30 @@ export class NodeClass {
     }
   }
 
-  async serialPortApi(data: SerialPortApi): Promise<any> {
-    if (!this.serialPortManager) {
-      throw new Error('SerialPortManager not initialized')
+  async serialApi(data: SerialApi): Promise<number> {
+    const findSerialBase = (name?: string) => {
+      let ret: SerialBase | undefined
+      if (name != undefined) {
+        for (const channelId of this.serialBaseId) {
+          const item = this.serialBaseMap.get(channelId)
+          if (item && item.info.name == name) {
+            ret = item
+            break
+          }
+        }
+      } else if (this.serialBaseId.length > 0) {
+        ret = this.serialBaseMap.get(this.serialBaseId[0])
+      }
+      if (ret == undefined) {
+        throw new Error(`serial device ${name ?? ''} not found`)
+      }
+      return ret
     }
-    return this.serialPortManager.handleApi(data)
+    const serialBase = findSerialBase(data.device)
+    if (data.method == 'write') {
+      return serialBase.write(Buffer.from(data.data), this.nodeItem.id)
+    }
+    throw new Error(`Unknown serialApi method`)
   }
 
   async linApi(
@@ -937,7 +971,152 @@ export class NodeClass {
       }
     }
   }
-  async canApi(data: any) {}
+  async canApi(data: any): Promise<any> {
+    const { op } = data
+
+    const findCanBase = (device?: string) => {
+      if (device != undefined) {
+        for (const channelId of this.canBaseId) {
+          const item = this.canBaseMap.get(channelId)
+          if (item && item.info.name == device) return item
+        }
+        throw new Error(`CAN device '${device}' not found`)
+      }
+      if (this.canBaseId.length > 0) {
+        const item = this.canBaseMap.get(this.canBaseId[0])
+        if (item) return item
+      }
+      throw new Error('no CAN device attached to this node')
+    }
+
+    if (op === 'createConnection') {
+      const base = findCanBase(data.device)
+      const tp = new CAN_TP(base)
+      const socket = new CAN_TP_SOCKET(tp, data.addr)
+      const handle = `cantp-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      this.cantpSocketMap.set(handle, { tp, socket })
+      return handle
+    }
+
+    if (op === 'closeConnection') {
+      const entry = this.cantpSocketMap.get(data.handle)
+      if (!entry) throw new Error(`CAN-TP handle '${data.handle}' not found`)
+      entry.socket.close()
+      entry.tp.close(false)
+      this.cantpSocketMap.delete(data.handle)
+      return
+    }
+
+    if (op === 'sendData') {
+      const entry = this.cantpSocketMap.get(data.handle)
+      if (!entry) throw new Error(`CAN-TP handle '${data.handle}' not found`)
+      const ts = await entry.socket.write(Buffer.from(data.data))
+      return ts
+    }
+
+    if (op === 'recvData') {
+      const entry = this.cantpSocketMap.get(data.handle)
+      if (!entry) throw new Error(`CAN-TP handle '${data.handle}' not found`)
+      const result = await entry.socket.read(data.timeout ?? 5000)
+      return { data: Array.from(result.data), ts: result.ts }
+    }
+
+    throw new Error(`unknown canApi op: ${op}`)
+  }
+
+  private resolveSomeipClient(channel?: string): VSomeIP_Client {
+    if (channel) {
+      const c = this.someipMap.get(channel)
+      if (c) return c
+      throw new Error(`someip device not found: ${channel}`)
+    }
+    if (this.someipBaseId.length === 1) {
+      const c = this.someipMap.get(this.someipBaseId[0])
+      if (c) return c
+    }
+    throw new Error(
+      'SOME/IP device key is required (channel) when zero or multiple SOME/IP devices are attached to this node'
+    )
+  }
+
+  /**
+   * Worker RPC: SOME/IP request / notify / subscribe / unsubscribe via vSomeIP client.
+   */
+  async someipApi(data: SomeipApiCall) {
+    const base = this.resolveSomeipClient(data.channel)
+    const toBuf = (p: SomeipMessage['payload']) =>
+      Buffer.isBuffer(p) ? p : Buffer.from((p as any)?.data ?? p ?? [])
+
+    if (data.op === 'subscribe') {
+      await base.subscribeToEvent(
+        data.service,
+        data.instance,
+        data.eventgroup,
+        data.event,
+        data.major ?? 0,
+        data.timeout,
+        data.eventType
+      )
+      return { ok: true }
+    }
+    if (data.op === 'unsubscribe') {
+      await base.unsubscribeFromEvent(
+        data.service,
+        data.instance,
+        data.eventgroup,
+        data.event,
+        data.major ?? 0,
+        data.timeout
+      )
+      return { ok: true }
+    }
+
+    const msg = { ...data.msg, payload: toBuf(data.msg.payload), sending: true as const }
+
+    if (data.op === 'notify') {
+      await base.notifyEvent(
+        Number(msg.service),
+        Number(msg.instance),
+        Number(msg.method),
+        toBuf(data.msg.payload),
+        false
+      )
+      return null
+    }
+
+    if (data.op === 'requestNoReturn') {
+      await base.requestService(
+        Number(msg.service),
+        Number(msg.instance),
+        data.major ?? 0,
+        data.minor ?? 0,
+        1000
+      )
+      await base.sendRequest(msg)
+      return null
+    }
+
+    if (data.op === 'request') {
+      await base.requestService(
+        Number(msg.service),
+        Number(msg.instance),
+        data.major ?? 0,
+        data.minor ?? 0,
+        1000
+      )
+      if (msg.messageType !== SomeipMessageType.REQUEST) {
+        msg.messageType = SomeipMessageType.REQUEST
+      }
+      const resp = await base.sendRequestAndWaitResponse(msg, data.timeout)
+      return {
+        ...resp,
+        payload: Buffer.isBuffer(resp.payload) ? resp.payload : Buffer.from(resp.payload as any)
+      }
+    }
+
+    throw new Error(`unsupported someipApi op: ${(data as any).op}`)
+  }
+
   async sendFrame(frame: CanMessage | LinMsg | SomeipMessage): Promise<number> {
     if ('msgType' in frame) {
       frame.msgType.uuid = this.nodeItem.id
@@ -1333,6 +1512,15 @@ export class NodeClass {
       if (linBaseItem) {
         linBaseItem.detachLinMessage(this.boundCb)
       }
+      const someipBaseItem = this.someipMap.get(c)
+      if (someipBaseItem) {
+        someipBaseItem.detachSomeipMessage(this.boundCb)
+        someipBaseItem.detachSomeipServiceValid(this.boundSomeipServiceValidCb)
+      }
+      const serialBaseItem = this.serialBaseMap.get(c)
+      if (serialBaseItem) {
+        serialBaseItem.detachSerialMessage(this.boundCb)
+      }
     }
     for (const e of this.freeEvent) {
       e.doip.event.removeListener(e.id, e.cb)
@@ -1341,18 +1529,15 @@ export class NodeClass {
     this.cantp.forEach((tp) => {
       tp.close(false)
     })
+    for (const { socket, tp } of this.cantpSocketMap.values()) {
+      socket.close()
+      tp.close(false)
+    }
+    this.cantpSocketMap.clear()
     this.lintp.forEach((tp) => {
       tp.close(false)
     })
     this.lintp.length = 0 // 清空数组
-
-    // 清理 SerialPort
-    if (this.serialPortManager) {
-      this.serialPortManager.closeAll().catch(() => {
-        // ignore errors during cleanup
-      })
-      this.serialPortManager = undefined
-    }
 
     // 清理 UdsTester 事件处理器
     if (this.pool) {
@@ -1397,19 +1582,31 @@ export class NodeClass {
     const res = await this.pool?.setTxPending(msg)
     return res ? Buffer.from(res) : undefined
   }
-  cb(frame: CanMessage | LinMsg | SomeipMessage) {
+  cb(frame: CanMessage | LinMsg | SomeipMessage | SerialMessage) {
+    const reportAsyncError = (e: any) => {
+      this.log?.scriptMsg(e.toString(), getTsUs(), 'error')
+    }
     if ('msgType' in frame) {
       if (frame.msgType.uuid != this.nodeItem.id) {
-        this.pool?.triggerCanFrame(frame)
+        void this.pool?.triggerCanFrame(frame).catch(reportAsyncError)
+      }
+    } else if ('dir' in frame) {
+      // SerialMessage: don't echo a node's own outgoing frame back to itself
+      if (!(frame.dir == 'OUT' && frame.uuid == this.nodeItem.id)) {
+        void this.pool?.triggerSerialFrame(frame).catch(reportAsyncError)
       }
     } else if ('instance' in frame) {
-      if (frame.uuid != this.nodeItem.id) {
-        this.pool?.triggerSomeipFrame(frame)
-      }
+      void this.pool?.triggerSomeipFrame(frame).catch(reportAsyncError)
     } else {
       if (frame.uuid != this.nodeItem.id || frame.direction == LinDirection.RECV) {
-        this.pool?.triggerLinFrame(frame)
+        void this.pool?.triggerLinFrame(frame).catch(reportAsyncError)
       }
     }
+  }
+  private someipServiceValidCb(info: VsomeipAvailabilityInfo) {
+    const reportAsyncError = (e: any) => {
+      this.log?.scriptMsg(e.toString(), getTsUs(), 'error')
+    }
+    void this.pool?.triggerSomeipServiceValid(info).catch(reportAsyncError)
   }
 }

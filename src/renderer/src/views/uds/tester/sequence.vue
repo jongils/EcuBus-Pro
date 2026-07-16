@@ -1,15 +1,33 @@
 <template>
   <div>
     <div class="tools">
-      <el-tooltip
-        effect="light"
-        :content="i18next.t('uds.tester.sequence.tooltips.addSequence')"
-        placement="bottom"
-      >
-        <el-button type="primary" size="small" link plain :disabled="start" @click="addNewSeq">
-          <Icon :icon="addCircle" class="icon" />
-        </el-button>
-      </el-tooltip>
+      <el-button-group>
+        <el-tooltip
+          effect="light"
+          :content="i18next.t('uds.tester.sequence.tooltips.addSequence')"
+          placement="bottom"
+        >
+          <el-button type="primary" size="small" link plain :disabled="start" @click="addNewSeq">
+            <Icon :icon="addCircle" class="icon" />
+          </el-button>
+        </el-tooltip>
+        <el-tooltip
+          effect="light"
+          :content="i18next.t('uds.tester.sequence.tooltips.copySequence')"
+          placement="bottom"
+        >
+          <el-button
+            type="primary"
+            size="small"
+            link
+            plain
+            :disabled="start || !activeTabName || tester.seqList.length === 0"
+            @click="copyCurrentSequence"
+          >
+            <Icon :icon="copyIcon" class="icon" />
+          </el-button>
+        </el-tooltip>
+      </el-button-group>
       <el-divider direction="vertical" />
       <el-tooltip
         effect="light"
@@ -146,11 +164,20 @@
 
 <script lang="ts" setup>
 import { v4 } from 'uuid'
-import { Param, param2len, param2str, paramSetVal, DataType, UdsDevice } from 'nodeCan/uds'
+import {
+  Param,
+  param2len,
+  param2str,
+  paramSetVal,
+  DataType,
+  UdsDevice,
+  Sequence
+} from 'nodeCan/uds'
 import { onMounted, ref, nextTick, computed, toRef, onBeforeMount, onUnmounted } from 'vue'
 import subseqeunce from './subsequence.vue'
 import { useDataStore } from '@r/stores/data'
 import addCircle from '@iconify/icons-material-symbols/add-circle-outline-rounded'
+import copyIcon from '@iconify/icons-material-symbols/content-copy'
 import playIcon from '@iconify/icons-material-symbols/play-circle-outline'
 import stopIcon from '@iconify/icons-material-symbols/stop-circle-outline'
 import logIcon from '@iconify/icons-material-symbols/text-ad-outline-rounded'
@@ -158,7 +185,7 @@ import cycleIcon from '@iconify/icons-material-symbols/cycle'
 import { Icon } from '@iconify/vue'
 import { ElMessageBox } from 'element-plus'
 import { useProjectStore } from '@r/stores/project'
-import { clone, cloneDeep } from 'lodash'
+import { cloneDeep } from 'lodash'
 import deviceIcon from '@iconify/icons-material-symbols/important-devices-outline'
 import presentIcon from '@iconify/icons-mdi/presentation-play'
 import { TesterInfo } from 'nodeCan/tester'
@@ -246,6 +273,25 @@ function addNewSeq() {
     services: []
   })
   activeTabName.value = `index${tester.value.seqList.length - 1}`
+}
+
+function copyCurrentSequence() {
+  if (!activeTabName.value || start.value) {
+    return
+  }
+  const num = parseInt(activeTabName.value.replace('index', ''), 10)
+  if (Number.isNaN(num) || !tester.value.seqList[num]) {
+    return
+  }
+  const source = tester.value.seqList[num]
+  const copy = cloneDeep(source) as Sequence
+  const baseName = source.name || `Seq${num}`
+  copy.name = i18next.t('uds.tester.sequence.copyNameTemplate', { name: baseName })
+  for (const svc of copy.services) {
+    svc.uuid = v4()
+  }
+  tester.value.seqList.splice(num + 1, 0, copy)
+  activeTabName.value = `index${num + 1}`
 }
 
 const project = useProjectStore()

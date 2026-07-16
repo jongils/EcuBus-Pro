@@ -75,6 +75,8 @@ export interface CanDB {
   signal_defines: SignalDefine[]
   value_tables: ValueTables
   version?: string
+  /** Original DBC file path (set during import) */
+  filePath?: string
 }
 
 /**
@@ -247,6 +249,18 @@ export type CanMessage<T = any> = {
   database?: string
 
   /**
+   * Absolute UTC time string for display (e.g. "2024-01-15 08:30:12.345").
+   * Set by replay module when using original recording time.
+   */
+  absTimeStr?: string
+
+  /**
+   * Original timestamp in microseconds from log file (before tsOffset).
+   * Set by replay module when using original recording time.
+   */
+  originalTs?: number
+
+  /**
    * The children signals of the CAN message.
    * internal use
    */
@@ -368,11 +382,28 @@ export interface CanInterAction {
   remote?: boolean
   data: string[]
 }
-export function formatError(error: Error) {
-  const stack = error?.stack || ''
+export function formatError(error: unknown) {
+  const errObj =
+    error instanceof Error
+      ? error
+      : new Error(
+          typeof error === 'string'
+            ? error
+            : error == null
+              ? 'Unknown error'
+              : (() => {
+                  try {
+                    return JSON.stringify(error)
+                  } catch {
+                    return String(error)
+                  }
+                })()
+        )
+
+  const stack = errObj.stack || ''
 
   // Get first stack line (usually contains error location)
-  const locationLine = stack.split('\n')[1] || ''
+  const locationLine = stack.split('\n')[1]?.trim() || ''
 
   // Extract file location info
   const locationMatch = locationLine.match(/webpack:\\ecubuspro\\(.*):(\d+):(\d+)\)$/)
@@ -390,12 +421,12 @@ export function formatError(error: Error) {
       const [, file, line, column] = newMatch
       location = `file://${file}:${line}:${column}`
     } else {
-      location = locationLine
+      location = locationLine || 'unknown'
     }
   }
 
   // Return simplified error message
-  return `Error: ${error.message}, Pos: ${location}`
+  return `Error: ${errObj.message || 'Unknown error'}, Pos: ${location || 'unknown'}`
 }
 
 export class CanError extends Error {
@@ -438,13 +469,34 @@ export interface CanAddr extends CanMsgType {
   paddingValue: string
 }
 
+export interface CandleCapability {
+  feature: number
+  fclk_can: number
+  tseg1_min: number
+  tseg1_max: number
+  tseg2_min: number
+  tseg2_max: number
+  sjw_max: number
+  brp_min: number
+  brp_max: number
+  brp_inc: number
+}
+
 export interface CanDevice {
   label: string
   id: string
   handle: any
   serialNumber?: string
   busy?: boolean
-  candleRes?: boolean
+  /** Vendor-specific metadata, keyed by vendor name */
+  extra?: {
+    candle?: {
+      cap?: CandleCapability
+      dataCap?: CandleCapability
+      fdSupported?: boolean
+      Res?: boolean
+    }
+  }
 }
 
 export interface CanEventMap {

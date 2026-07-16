@@ -41,6 +41,10 @@
       "link": "pwm/pwm.md"
     },
     {
+      "text": "Serial",
+      "link": "serial/serial.md"
+    },
+    {
       "text": "Network",
       "items": [
         {
@@ -299,8 +303,22 @@
       "text": "SOME/IP",
       "items": [
         {
-          "text": "Request/Response",
+          "text": "Local SOME/IP Demo",
           "link": "someip/readme.md"
+        },
+        {
+          "text": "Remote SOME/IP sDemo",
+          "link": "someip_remote/readme.md"
+        }
+      ],
+      "collapsed": true
+    },
+    {
+      "text": "CANOpen",
+      "items": [
+        {
+          "text": "CANOpen PDO",
+          "link": "canopen_pdo/readme.md"
         }
       ],
       "collapsed": true

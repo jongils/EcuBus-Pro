@@ -69,10 +69,27 @@
               <div class="ad-carousel-container">
                 <el-carousel
                   height="150px"
-                  :interval="5000"
+                  :interval="adCarouselInterval"
                   indicator-position="outside"
                   arrow="never"
+                  @change="onAdCarouselChange"
                 >
+                  <!-- AutoC Ad -->
+                  <el-carousel-item>
+                    <div class="ad-slot autoc" @click="openAdLink('autoc')">
+                      <div class="ad-image">
+                        <img :src="autocLogoUrl" alt="AutoC" />
+                      </div>
+                      <div class="ad-content">
+                        <div class="ad-title">AutoC</div>
+                        <div class="ad-description">
+                          AUTOSAR BSW AI assistant: natural-language config, validation, and
+                          iterative fixes in your project.
+                        </div>
+                        <div class="ad-cta">Learn More →</div>
+                      </div>
+                    </div>
+                  </el-carousel-item>
                   <!-- LinCable Ad -->
                   <el-carousel-item>
                     <div class="ad-slot lincable" @click="openAdLink('lincable')">
@@ -516,6 +533,8 @@ import i18next from 'i18next'
 
 // dayjs.extend(relativeTime);
 dayjs.extend(isSameOrAfter)
+const autocLogoUrl = 'https://www.autoc-tool.com/logo1.png'
+const adCarouselInterval = ref(12000)
 const hasUpdate = ref(false)
 const { width, height } = useWindowSize()
 const project = useProjectStore()
@@ -573,8 +592,14 @@ function openUm() {
   window.electron.ipcRenderer.send('ipc-open-um')
 }
 
+function onAdCarouselChange(index: number) {
+  adCarouselInterval.value = index === 0 ? 12000 : 5000
+}
+
 function openAdLink(adId: string) {
-  if (adId === 'lincable') {
+  if (adId === 'autoc') {
+    window.electron.ipcRenderer.send('ipc-open-link', 'https://www.autoc-tool.com/')
+  } else if (adId === 'lincable') {
     window.electron.ipcRenderer.send(
       'ipc-open-link',
       'https://app.whyengineer.com/docs/um/hardware/lincable.html'
@@ -1099,6 +1124,15 @@ onMounted(() => {
 
 .ad-slot.lincable .ad-cta {
   color: #00d4aa;
+}
+
+.ad-slot.autoc {
+  border-color: #6366f1;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(99, 102, 241, 0.2) 100%);
+}
+
+.ad-slot.autoc .ad-cta {
+  color: #6366f1;
 }
 
 .ad-image {

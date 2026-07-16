@@ -6,6 +6,7 @@ import { onMounted, computed } from 'vue'
 import { version } from '../../package.json'
 const { Layout } = DefaultTheme
 import { createMermaidRenderer } from 'vitepress-mermaid-renderer'
+import AutoCAside from './AutoCAside.vue'
 const { lang, isDark } = useData() // 获取当前语言，比如 'en-US' 或 'zh-CN'
 const route = useRoute()
 const initMermaid = () => {
@@ -75,9 +76,9 @@ onMounted(() => {
         </div>
       </div>
     </template>
-    <!-- <template #doc-after>
-      <span>test</span>
-    </template> -->
+    <template #aside-bottom>
+      <AutoCAside />
+    </template>
   </Layout>
 </template>
 <style scoped>

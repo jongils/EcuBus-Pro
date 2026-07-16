@@ -71,6 +71,7 @@
       <div v-if="activeTree">
         <canNodeVue
           v-if="activeTree.type == 'can'"
+          ref="canNodeRef"
           v-model="dataModify"
           :height="h"
           :index="activeTree.id"
@@ -79,6 +80,7 @@
         />
         <ethNodeVue
           v-else-if="activeTree.type == 'eth'"
+          ref="ethNodeRef"
           v-model="dataModify"
           :index="activeTree.id"
           :vendor="activeTree.vendor"
@@ -86,6 +88,7 @@
         />
         <LinNodeVue
           v-else-if="activeTree.type == 'lin'"
+          ref="linNodeRef"
           v-model="dataModify"
           :index="activeTree.id"
           :vendor="activeTree.vendor"
@@ -93,6 +96,15 @@
         />
         <PwmNodeVue
           v-else-if="activeTree.type == 'pwm'"
+          ref="pwmNodeRef"
+          v-model="dataModify"
+          :index="activeTree.id"
+          :vendor="activeTree.vendor"
+          @change="nodeChange"
+        />
+        <SerialNodeVue
+          v-else-if="activeTree.type == 'serial'"
+          ref="serialNodeRef"
           v-model="dataModify"
           :index="activeTree.id"
           :vendor="activeTree.vendor"
@@ -131,6 +143,7 @@ import { ecubusPro } from '../../../../../../package.json'
 import questionIcon from '@iconify/icons-mdi/question-mark-circle-outline'
 import questionIcon1 from '@iconify/icons-mdi/question-mark-circle'
 import PwmNodeVue from './pwmNode.vue'
+import SerialNodeVue from './serialNode.vue'
 import i18next from 'i18next'
 
 const loading = ref(false)
@@ -150,8 +163,62 @@ const treeRef = ref()
 const devices = useDataStore()
 const globalStart = useGlobalStart()
 
+// Refs for node components to call save method
+const canNodeRef = ref()
+const ethNodeRef = ref()
+const linNodeRef = ref()
+const pwmNodeRef = ref()
+const serialNodeRef = ref()
+
 function openEcuBusHardware() {
   window.electron.ipcRenderer.send('ipc-open-link', 'https://app.whyengineer.com/docs/um/hardware/')
+}
+
+// Helper function to show save dialog with three buttons
+async function showSaveDialog(done: () => void): Promise<void> {
+  try {
+    const action = await ElMessageBox({
+      message: i18next.t('uds.hardware.dialogs.unsavedChangesMessage'),
+      title: i18next.t('uds.hardware.dialogs.warning'),
+      showCancelButton: true,
+      showClose: true,
+      closeOnClickModal: false,
+      confirmButtonText: i18next.t('uds.hardware.dialogs.save'),
+      cancelButtonText: i18next.t('uds.hardware.dialogs.discard'),
+      distinguishCancelAndClose: true,
+      type: 'warning',
+      buttonSize: 'small',
+      appendTo: `#win${winKey}`
+    })
+
+    // User clicked Save
+    let saved = false
+    if (activeTree.value?.type == 'can' && canNodeRef.value) {
+      saved = await canNodeRef.value.save()
+    } else if (activeTree.value?.type == 'eth' && ethNodeRef.value) {
+      saved = await ethNodeRef.value.save?.()
+    } else if (activeTree.value?.type == 'lin' && linNodeRef.value) {
+      saved = await linNodeRef.value.save?.()
+    } else if (activeTree.value?.type == 'pwm' && pwmNodeRef.value) {
+      saved = await pwmNodeRef.value.save?.()
+    } else if (activeTree.value?.type == 'serial' && serialNodeRef.value) {
+      saved = await serialNodeRef.value.save?.()
+    }
+
+    if (saved) {
+      done()
+    }
+    // If validation failed, don't proceed
+  } catch (action: any) {
+    if (action === 'cancel') {
+      // User clicked Discard
+      dataModify.value = false
+      done()
+    } else if (action === 'close') {
+      // User clicked X or pressed ESC - cancel the operation, keep current selection
+      treeRef.value?.setCurrentKey(activeTree.value?.id)
+    }
+  }
 }
 
 function nodeClick(data: tree, node: any) {
@@ -165,25 +232,8 @@ function nodeClick(data: tree, node: any) {
         activeTree.value = data
       })
     }
-    if (dataModify.value) {
-      ElMessageBox.confirm(
-        i18next.t('uds.hardware.dialogs.discardChangesMessage'),
-        i18next.t('uds.hardware.dialogs.warning'),
-        {
-          confirmButtonText: i18next.t('uds.hardware.dialogs.discard'),
-          cancelButtonText: i18next.t('uds.hardware.dialogs.cancel'),
-          type: 'warning',
-          buttonSize: 'small',
-          appendTo: `#win${winKey}`
-        }
-      )
-        .then(() => {
-          dataModify.value = false
-          done()
-        })
-        .catch(() => {
-          treeRef.value?.setCurrentKey(activeTree.value?.id)
-        })
+    if (dataModify.value && activeTree.value) {
+      showSaveDialog(done)
     } else {
       done()
     }
@@ -222,25 +272,8 @@ function addNewDevice(node: tree) {
     })
   }
 
-  if (dataModify.value) {
-    ElMessageBox.confirm(
-      i18next.t('uds.hardware.dialogs.discardChangesMessage'),
-      i18next.t('uds.hardware.dialogs.warning'),
-      {
-        confirmButtonText: i18next.t('uds.hardware.dialogs.discard'),
-        cancelButtonText: i18next.t('uds.hardware.dialogs.cancel'),
-        type: 'warning',
-        buttonSize: 'small',
-        appendTo: `#win${winKey}`
-      }
-    )
-      .then(() => {
-        dataModify.value = false
-        done()
-      })
-      .catch(() => {
-        treeRef.value?.setCurrentKey(activeTree.value?.id)
-      })
+  if (dataModify.value && activeTree.value) {
+    showSaveDialog(done)
   } else {
     done()
   }
@@ -279,7 +312,7 @@ function nodeChange(id: string, name: string) {
 interface tree {
   label: string
   vendor: CanVendor
-  type?: 'can' | 'lin' | 'eth' | 'pwm'
+  type?: 'can' | 'lin' | 'eth' | 'pwm' | 'serial'
   append: boolean
   id: string
   children?: tree[]
@@ -382,6 +415,29 @@ function addSubTree(vendor: CanVendor, node: tree, deviceIndexMap: Map<string, n
         vendor: vendor,
         id: key,
         type: 'pwm',
+        index: deviceIndexMap.get(key)
+      })
+    }
+  }
+  const serialTree: tree = {
+    label: i18next.t('uds.hardware.deviceTypes.serial'),
+    append: true,
+    id: vendor + 'SERIAL',
+    vendor: vendor,
+    type: 'serial',
+    children: []
+  }
+  if (vendor == 'ecubus') {
+    node.children?.push(serialTree)
+  }
+  for (const [key, value] of Object.entries(devices.devices)) {
+    if (value.type == 'serial' && value.serialDevice && value.serialDevice.vendor == vendor) {
+      serialTree.children?.push({
+        label: value.serialDevice.name,
+        append: false,
+        vendor: vendor,
+        id: key,
+        type: 'serial',
         index: deviceIndexMap.get(key)
       })
     }

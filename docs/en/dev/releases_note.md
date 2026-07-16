@@ -1,6 +1,53 @@
 # EcuBus-Pro Release Notes
-## 0.8.62
+
+
+## 0.8.65
+Changes since v0.8.64:
+
+ 
+* [bug]:fix script lin signal trigger 
+* [opt]:add uds sequence and service dulp #350 
+* [fix]: add missing 'src' path alias for renderer imports (#352) 
+* [feat]: macOS support, BLF replay reader, and network topology enhancements (#347) 
+* [bug]:fix log change uds service 
+* [bug]:fix seqeunce sort #346 
+* [bug]:fix module imports in report.js 
+* [bug]:Implement variable setting in IPC handler with data update logic #327 
+* [bug]:fix panel image can't display local image 
+* [opt]:opt panel led, allow custom svg 
+* [bug]:fix plugin script path issue
+* [feat]:drag-and-drop BLF/ASC parsing with detail panel by @lixiaoxie in https://github.com/ecubus/EcuBus-Pro/pull/354
+* [feat]:add CAN-TP worker API and can_tp example by @crazy0104 in https://github.com/ecubus/EcuBus-Pro/pull/376
+* [opt]:* Refactor Candle capabilities and enhance timing features by @zhangjiance in https://github.com/ecubus/EcuBus-Pro/pull/379
+---
+
+
+## 0.8.64
+Changes since v0.8.63:
+
+ 
+* [bug]:fix module imports in report.js 
+* [bug]:Implement variable setting in IPC handler with data update logic #327 
+* [bug]:fix panel image can't display local image 
+* [opt]:opt panel led, allow custom svg 
+* [bug]:fix plugin script path issue
+* [feat]:someip feature done, [Detail](https://app.whyengineer.com/docs/um/someip/)
+* [feat]:add cdd parse by @crazy0104 in #328
+---
+
+
+## 0.8.63
 Changes since v0.8.62:
+
+ 
+* [feat]:add canopen api 
+* [bug]:fix logger empty log file 
+* [opt]:opt script api import
+* [bug]:fix uds job not found issue
+---
+
+## 0.8.62
+Changes since v0.8.61:
 
 * [bug]:fix ldf parse without nodeAttr 
 * [example]:add can fuzz example 

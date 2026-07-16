@@ -66,7 +66,6 @@
                 <el-option
                   :label="i18next.t('uds.network.replayConfig.options.blfFormat')"
                   value="blf"
-                  disabled
                 />
               </el-select>
             </el-form-item>
@@ -111,6 +110,16 @@
               <el-input-number v-model="formData.repeatCount" :min="0" :max="9999" :step="1" />
               <span style="margin-left: 10px; color: #909399; font-size: 12px">
                 {{ i18next.t('uds.network.replayConfig.hints.repeatCount') }}
+              </span>
+            </el-form-item>
+
+            <el-form-item
+              :label="i18next.t('uds.network.replayConfig.labels.useOriginalTime')"
+              prop="useOriginalTime"
+            >
+              <el-switch v-model="formData.useOriginalTime" />
+              <span style="margin-left: 10px; color: #909399; font-size: 12px">
+                {{ i18next.t('uds.network.replayConfig.hints.useOriginalTime') }}
               </span>
             </el-form-item>
           </el-form>
@@ -264,6 +273,9 @@ if (formData.value.repeatCount === undefined) {
 }
 if (formData.value.mode === undefined) {
   formData.value.mode = 'offline'
+}
+if (formData.value.useOriginalTime === undefined) {
+  formData.value.useOriginalTime = true
 }
 
 const nameCheck = (rule: any, value: any, callback: any) => {

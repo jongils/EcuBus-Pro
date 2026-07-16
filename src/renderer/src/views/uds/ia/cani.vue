@@ -1,6 +1,13 @@
 <template>
-  <div style="display: relative">
-    <VxeGrid ref="xGrid" v-bind="gridOptions" class="sequenceTable" @cell-click="ceilClick">
+  <div style="display: relative" @click="hideContextMenu" @contextmenu.prevent="onContextMenu">
+    <VxeGrid
+      ref="xGrid"
+      v-bind="gridOptions"
+      class="sequenceTable"
+      @cell-click="ceilClick"
+      @cell-mouseenter="onCellMouseEnter"
+      @cell-mouseleave="onCellMouseLeave"
+    >
       <template #default_trigger="{ row, rowIndex }">
         <span class="lr">
           <span
@@ -82,6 +89,9 @@
         <el-input v-model="row.id" size="small" style="width: 100%" @input="idChange" />
       </template>
       <template #default_name="{ row }">
+        <span class="name-cell">{{ row.name || '--' }}</span>
+      </template>
+      <template #edit_name="{ row }">
         <el-input v-model="row.name" size="small" style="width: 100%" />
       </template>
       <template #toolbar>
@@ -149,6 +159,125 @@
         </div>
       </template>
     </VxeGrid>
+
+    <!-- Right-Click Context Menu (teleported to body to avoid parent CSS interference) -->
+    <Teleport to="body">
+      <div
+        v-show="contextMenuVisible"
+        :style="{
+          position: 'fixed',
+          left: contextMenuX + 'px',
+          top: contextMenuY + 'px',
+          zIndex: 9999
+        }"
+        class="context-menu"
+        @click.stop
+      >
+        <div class="context-menu-item" @click="(addFrame(), hideContextMenu())">
+          {{ i18next.t('uds.network.cani.contextMenu.addFrame') }}
+        </div>
+        <div
+          class="context-menu-item"
+          :class="{ disabled: popoverIndex < 0 || periodTimer[popoverIndex] == true }"
+          @click="(editFrame(), hideContextMenu())"
+        >
+          {{ i18next.t('uds.network.cani.tooltips.editFrame') }}
+        </div>
+        <div class="context-menu-item" @click="(openFrameSelect(), hideContextMenu())">
+          {{ i18next.t('uds.network.cani.contextMenu.selectFrameFromDatabase') }}
+        </div>
+        <div class="context-menu-separator"></div>
+        <div
+          class="context-menu-item"
+          :class="{ disabled: popoverIndex < 0 }"
+          @click="(copyFrame(), hideContextMenu())"
+        >
+          {{ i18next.t('uds.network.cani.contextMenu.copy') }}
+        </div>
+        <div
+          class="context-menu-item"
+          :class="{ disabled: !copiedFrame }"
+          @click="(pasteFrame(), hideContextMenu())"
+        >
+          {{ i18next.t('uds.network.cani.contextMenu.paste') }}
+        </div>
+        <div class="context-menu-separator"></div>
+        <div
+          class="context-menu-item"
+          :class="{ disabled: popoverIndex < 0 || periodTimer[popoverIndex] == true }"
+          @click="(deleteFrame(), hideContextMenu())"
+        >
+          {{ i18next.t('uds.network.cani.contextMenu.deleteFrame') }}
+        </div>
+        <div class="context-menu-item" @click="(deleteAllFrames(), hideContextMenu())">
+          {{ i18next.t('uds.network.cani.contextMenu.deleteAllFrames') }}
+        </div>
+      </div>
+    </Teleport>
+
+    <el-tooltip
+      effect="light"
+      placement="top"
+      :show-after="200"
+      popper-class="frame-data-tooltip"
+      :virtual-ref="tooltipTarget"
+      virtual-triggering
+      :disabled="!tooltipInfo"
+    >
+      <template #content>
+        <div class="tooltip-content">
+          <table class="tp-table">
+            <tbody>
+              <tr v-if="tooltipInfo?.name">
+                <td class="tp-label">Name</td>
+                <td class="tp-value">{{ tooltipInfo.name }}</td>
+              </tr>
+              <tr v-if="tooltipInfo?.database">
+                <td class="tp-label">DB</td>
+                <td class="tp-value">{{ tooltipInfo.database }}</td>
+              </tr>
+              <tr>
+                <td class="tp-label">ID</td>
+                <td class="tp-value">0x{{ tooltipInfo?.idHex }}</td>
+              </tr>
+              <tr>
+                <td class="tp-label">Type</td>
+                <td class="tp-value">
+                  {{ tooltipInfo?.typeName }}<span v-if="tooltipInfo?.remote">, Remote</span
+                  ><span v-if="tooltipInfo?.brs">, BRS</span>
+                </td>
+              </tr>
+              <tr>
+                <td class="tp-label">DLC</td>
+                <td class="tp-value">{{ tooltipInfo?.dlc }}</td>
+              </tr>
+              <tr>
+                <td class="tp-label">Channel</td>
+                <td class="tp-value">{{ tooltipInfo?.channelName }}</td>
+              </tr>
+              <tr>
+                <td class="tp-label">Trigger</td>
+                <td class="tp-value">
+                  {{ tooltipInfo?.triggerType
+                  }}<span v-if="tooltipInfo?.triggerDetail">
+                    ({{ tooltipInfo.triggerDetail }})</span
+                  >
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="tp-data">
+            <template v-if="tooltipInfo?.dataChunks.length">
+              <template v-for="(chunk, ci) in tooltipInfo.dataChunks" :key="ci">
+                <span v-if="ci > 0"><br /></span>
+                <span>{{ chunk }}</span>
+              </template>
+            </template>
+            <span v-else>--</span>
+          </div>
+        </div>
+      </template>
+    </el-tooltip>
 
     <el-popover width="250" :virtual-ref="ppRef" trigger="click" virtual-triggering>
       <el-row v-if="dataBase.ia[editIndex]?.action[popoverIndex]" style="padding: 10px">
@@ -313,11 +442,17 @@
               <el-input
                 v-for="index in dlcToLen"
                 :key="index"
+                :ref="
+                  (el: any) => {
+                    if (el) byteInputRefs[index - 1] = el
+                  }
+                "
                 v-model="formData.data[index - 1]"
                 class="dataI"
                 :maxlength="2"
                 :placeholder="i18next.t('uds.network.cani.placeholders.hexByte')"
                 style="width: 65px; margin-right: 5px; margin-bottom: 5px"
+                @focus="onByteFocus"
                 @input="dataChange(index - 1, $event)"
                 @change="dataChangeDone"
                 ><template #prepend>{{ index - 1 }}</template></el-input
@@ -391,6 +526,60 @@ import { v4 } from 'uuid'
 import i18next from 'i18next'
 
 const xGrid = ref()
+const tooltipRowIndex = ref(-1)
+const tooltipTarget = ref<HTMLElement | null>(null)
+let tooltipTimer: ReturnType<typeof setTimeout> | null = null
+
+const tooltipInfo = computed(() => {
+  const idx = tooltipRowIndex.value
+  if (idx < 0) return null
+  const row = dataBase.ia[editIndex.value]?.action[idx]
+  if (!row) return null
+
+  // Explicitly read all row properties so Vue tracks every reactive dependency
+  const name = row.name
+  const database = row.database
+  const rawId = row.id
+  const rowType = row.type
+  const remote = row.remote
+  const brs = row.brs
+  const dlc = row.dlc
+  const channel = row.channel
+  const trigger = row.trigger
+  const data = row.data
+
+  return {
+    name,
+    database,
+    idHex: rawId
+      ? parseInt(rawId, 16)
+          .toString(16)
+          .toUpperCase()
+          .padStart(rowType.includes('ecan') ? 8 : 4, '0')
+      : '--',
+    typeName: typeMap[rowType || ''] || rowType,
+    remote,
+    brs,
+    dlc,
+    channelName: devices.value[channel]?.name || channel || '--',
+    triggerType: trigger.type.toUpperCase(),
+    triggerDetail:
+      trigger.type === 'manual' && trigger.onKey
+        ? `Key: ${trigger.onKey}`
+        : trigger.type === 'periodic'
+          ? `${trigger.period || 10}ms`
+          : '',
+    dataChunks: (() => {
+      if (!data || data.length === 0) return []
+      const formatted = data.map((b: string) => (b || '00').padStart(2, '0').toUpperCase())
+      const chunks: string[] = []
+      for (let i = 0; i < formatted.length; i += 16) {
+        chunks.push(formatted.slice(i, i + 16).join(' '))
+      }
+      return chunks
+    })()
+  }
+})
 // const logData = ref<LogData[]>([])
 const typeMap = {
   can: i18next.t('uds.network.cani.frameTypes.can'),
@@ -437,6 +626,10 @@ const periodTimer = computed({
   }
 })
 const selectFrameVisible = ref(false)
+const contextMenuVisible = ref(false)
+const contextMenuX = ref(0)
+const contextMenuY = ref(0)
+const copiedFrame = ref<CanInterAction | null>(null)
 const speicalDb = computed(() => {
   //connected device db
   const list: string[] = []
@@ -496,7 +689,7 @@ const gridOptions = computed(() => {
     columns: [
       {
         type: 'seq',
-        width: 50,
+        width: 40,
         title: '#',
         align: 'center',
         fixed: 'left',
@@ -505,28 +698,28 @@ const gridOptions = computed(() => {
       {
         field: 'send',
         title: i18next.t('uds.network.cani.table.send'),
-        width: 100,
+        minWidth: 80,
         resizable: false,
         slots: { default: 'default_send' }
       },
       {
         field: 'trigger',
         title: i18next.t('uds.network.cani.table.trigger'),
-        width: 200,
+        minWidth: 140,
         resizable: false,
         slots: { default: 'default_trigger' }
       },
       {
         field: 'name',
         title: i18next.t('uds.network.cani.table.name'),
-        width: 100,
+        minWidth: 80,
         editRender: {},
-        slots: { edit: 'default_name' }
+        slots: { default: 'default_name', edit: 'edit_name' }
       },
       {
         field: 'id',
         title: i18next.t('uds.network.cani.table.idHex'),
-        minWidth: 100,
+        minWidth: 80,
         editRender: {},
         slots: { edit: 'default_id' }
       },
@@ -540,14 +733,14 @@ const gridOptions = computed(() => {
       {
         field: 'type',
         title: i18next.t('uds.network.cani.table.type'),
-        width: 100,
+        minWidth: 90,
         editRender: {},
         slots: { default: 'default_type1', edit: 'default_type' }
       },
       {
         field: 'dlc',
         title: i18next.t('uds.network.cani.table.dlc'),
-        width: 100,
+        minWidth: 70,
         editRender: {},
         slots: { edit: 'default_dlc' }
       }
@@ -636,6 +829,34 @@ const dlcToLen = computed(() => {
 function ceilClick(val: any) {
   popoverIndex.value = val.rowIndex
 }
+function onCellMouseEnter({ rowIndex, $event }: any) {
+  if (tooltipTimer) {
+    clearTimeout(tooltipTimer)
+    tooltipTimer = null
+  }
+  const tr = $event.currentTarget.parentElement as HTMLElement
+  // Same row: tr unchanged. Only update target and fire synthetic event on row change
+  if (tooltipRowIndex.value !== rowIndex || tooltipTarget.value !== tr) {
+    tooltipRowIndex.value = rowIndex
+    tooltipTarget.value = tr
+    nextTick(() => {
+      // Dispatch synthetic mouseenter so el-tooltip detects hover on the row
+      tr.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }))
+    })
+  }
+}
+function onCellMouseLeave() {
+  // el-tooltip auto-hides via its own mouseleave listener on the tr.
+  // Delay clearing rowIndex to allow moving between rows without flicker
+  if (tooltipTimer) {
+    clearTimeout(tooltipTimer)
+    tooltipTimer = null
+  }
+  tooltipTimer = setTimeout(() => {
+    tooltipRowIndex.value = -1
+    tooltipTarget.value = null
+  }, 200)
+}
 function idChange(v: string) {
   //if last char is not hex, remove it
   if (v.length > 0) {
@@ -656,11 +877,35 @@ function dataChangeDone() {
     }
   }
 }
+const byteInputRefs = ref<any[]>([])
+function onByteFocus(event: FocusEvent) {
+  // Auto-select existing content so user can type over it immediately
+  const target = event.target as HTMLElement
+  const input =
+    target.tagName === 'INPUT' ? (target as HTMLInputElement) : target.querySelector('input')
+  input?.select()
+}
 function dataChange(index: number, v: string) {
   if (v.length > 0 && formData.value) {
     if (v[v.length - 1].match(/[0-9a-fA-F]/) == null) {
       formData.value.data[index] = v.slice(0, -1)
     }
+  }
+  // Auto-focus next byte input when current is fully filled (2 hex chars)
+  if (v.length >= 2) {
+    nextTick(() => {
+      const nextRef = byteInputRefs.value[index + 1]
+      if (nextRef) {
+        if (typeof nextRef.focus === 'function') {
+          nextRef.focus()
+          nextRef.select?.()
+        } else if (nextRef.$el) {
+          const input = nextRef.$el.querySelector('input')
+          input?.focus()
+          input?.select()
+        }
+      }
+    })
   }
 }
 function handleDataChange(data: Buffer) {
@@ -673,11 +918,82 @@ function handleDataChange(data: Buffer) {
 
 function deleteFrame() {
   if (popoverIndex.value >= 0) {
-    dataBase.ia[editIndex.value].action.splice(popoverIndex.value, 1)
+    const deletedIndex = popoverIndex.value
+    dataBase.ia[editIndex.value].action.splice(deletedIndex, 1)
+    const actions = dataBase.ia[editIndex.value].action
+    if (actions.length > 0) {
+      // Select the previous record, or the first if the deleted one was at index 0
+      popoverIndex.value = Math.max(0, deletedIndex - 1)
+      xGrid.value?.setCurrentRow(actions[popoverIndex.value])
+    } else {
+      popoverIndex.value = -1
+      xGrid.value?.clearCurrentRow()
+    }
+  }
+}
+
+function deleteAllFrames() {
+  const actions = dataBase.ia[editIndex.value].action
+  if (actions.length > 0) {
+    // Clear all periodic sends first
+    for (let i = 0; i < actions.length; i++) {
+      const key = `${editIndex.value}-${i}`
+      if (runtime.canPeriods[key]) {
+        runtime.removeCanPeriod(key)
+        window.electron.ipcRenderer.send('ipc-stop-can-period', key)
+      }
+    }
+    actions.length = 0
     popoverIndex.value = -1
     xGrid.value?.clearCurrentRow()
   }
 }
+
+function copyFrame() {
+  if (popoverIndex.value >= 0) {
+    const frame = dataBase.ia[editIndex.value].action[popoverIndex.value]
+    if (frame) {
+      copiedFrame.value = cloneDeep(frame)
+    }
+  }
+}
+
+function pasteFrame() {
+  if (copiedFrame.value) {
+    const channel = Object.keys(devices.value)[0] || ''
+    const frame = cloneDeep(copiedFrame.value)
+    frame.uuid = v4()
+    if (!Object.keys(devices.value).includes(frame.channel)) {
+      frame.channel = channel
+    }
+    dataBase.ia[editIndex.value].action.push(frame)
+  }
+}
+
+function onContextMenu(event: MouseEvent) {
+  const target = event.target as HTMLElement
+  // Locate row by VxeGrid CSS class instead of relying on data-row-index attribute
+  const row = target.closest('.vxe-body--row') as HTMLElement | null
+  if (row?.parentElement) {
+    const allRows = Array.from(row.parentElement.querySelectorAll('.vxe-body--row'))
+    const rowIndex = allRows.indexOf(row)
+    if (rowIndex >= 0) {
+      popoverIndex.value = rowIndex
+      xGrid.value?.setCurrentRow(dataBase.ia[editIndex.value].action[rowIndex])
+    }
+  }
+  contextMenuVisible.value = true
+  // Keep menu within viewport bounds
+  const menuWidth = 220
+  const menuHeight = 220
+  contextMenuX.value = Math.min(event.clientX, window.innerWidth - menuWidth)
+  contextMenuY.value = Math.min(event.clientY, window.innerHeight - menuHeight)
+}
+
+function hideContextMenu() {
+  contextMenuVisible.value = false
+}
+
 const pressedKey = ref('')
 const animate = ref(false)
 onKeyStroke(true, (e) => {
@@ -702,6 +1018,53 @@ onKeyUp(true, () => {
     animate.value = false
   }, 200)
 })
+
+// Ctrl+C / Ctrl+V keyboard shortcuts for copy/paste frame
+onKeyStroke(['c', 'C'], (e) => {
+  if ((e.ctrlKey || e.metaKey) && !editV.value && !connectV.value && !selectFrameVisible.value) {
+    e.preventDefault()
+    copyFrame()
+  }
+})
+onKeyStroke(['v', 'V'], (e) => {
+  if ((e.ctrlKey || e.metaKey) && !editV.value && !connectV.value && !selectFrameVisible.value) {
+    e.preventDefault()
+    pasteFrame()
+  }
+})
+
+// Arrow Up/Down: navigate between frame rows
+onKeyStroke('ArrowUp', (e) => {
+  if (!editV.value && !connectV.value && !selectFrameVisible.value) {
+    const actions = dataBase.ia[editIndex.value].action
+    if (actions.length > 0 && popoverIndex.value > 0) {
+      e.preventDefault()
+      popoverIndex.value--
+      xGrid.value?.setCurrentRow(actions[popoverIndex.value])
+    }
+  }
+})
+onKeyStroke('ArrowDown', (e) => {
+  if (!editV.value && !connectV.value && !selectFrameVisible.value) {
+    const actions = dataBase.ia[editIndex.value].action
+    if (actions.length > 0 && popoverIndex.value < actions.length - 1) {
+      e.preventDefault()
+      popoverIndex.value++
+      xGrid.value?.setCurrentRow(actions[popoverIndex.value])
+    }
+  }
+})
+
+// Delete key: delete selected frame
+onKeyStroke('Delete', (e) => {
+  if (!editV.value && !connectV.value && !selectFrameVisible.value) {
+    if (popoverIndex.value >= 0 && !periodTimer.value[popoverIndex.value]) {
+      e.preventDefault()
+      deleteFrame()
+    }
+  }
+})
+
 function sendFrame(index: number) {
   const frame = dataBase.ia[editIndex.value]?.action[index]
   if (frame) {
@@ -851,6 +1214,87 @@ function openFrameSelect() {
     padding: 0 5px !important;
   }
 }
+
+/* Context Menu (global — Teleport renders it outside component tree) */
+.context-menu {
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 4px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  padding: 4px 0;
+  min-width: 220px;
+  font-size: 13px;
+}
+
+.context-menu-item {
+  padding: 6px 16px;
+  cursor: pointer;
+  color: var(--el-text-color-primary);
+  transition: background-color 0.15s;
+}
+
+.context-menu-item:hover {
+  background-color: var(--el-color-primary-light-9);
+}
+
+.context-menu-item.disabled {
+  color: var(--el-text-color-disabled);
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background-color: var(--el-border-color-light);
+}
+
+/* Frame data tooltip */
+.frame-data-tooltip {
+  max-width: 480px !important;
+  padding: 6px 8px !important;
+}
+
+.tooltip-content {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.tp-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.tp-table tr {
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.tp-label {
+  color: var(--el-text-color-secondary);
+  padding: 2px 8px 2px 0;
+  white-space: nowrap;
+  vertical-align: top;
+  text-align: right;
+  width: 50px;
+}
+
+.tp-value {
+  color: var(--el-text-color-primary);
+  padding: 2px 0;
+  word-break: break-all;
+}
+
+.tp-data {
+  margin-top: 6px;
+  padding: 4px 6px;
+  background: var(--el-fill-color-light);
+  border-radius: 3px;
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 10px;
+  line-height: 1.6;
+  word-break: break-all;
+  color: var(--el-text-color-primary);
+}
 </style>
 <style scoped>
 .key-box {
@@ -876,6 +1320,12 @@ function openFrameSelect() {
 
 .hint-text {
   color: #6b7280;
+}
+
+.name-cell {
+  cursor: default;
+  display: inline-block;
+  width: 100%;
 }
 
 /* 动画效果 */

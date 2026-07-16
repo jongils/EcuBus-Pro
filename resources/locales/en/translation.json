@@ -109,6 +109,7 @@
       "index": {
         "tooltips": {
           "deleteDatabase": "Delete Database",
+          "updateDatabase": "Reload database from source file",
           "saveDatabase": "Save Database",
           "fixErrorsToSave": "Fix errors to save the database"
         },
@@ -138,7 +139,13 @@
           "cancel": "Cancel"
         },
         "messages": {
-          "saveSuccess": "The database has been saved successfully"
+          "saveSuccess": "The database has been saved successfully",
+          "updateSuccess": "Database updated successfully. Existing IA messages and panel bindings are preserved.",
+          "updateSuccessSaveRequired": "Database updated. Save the database to apply changes to the project.",
+          "fileNotFound": "Source file not found: {{path}}. Please select a new file."
+        },
+        "updateConfirm": {
+          "title": "Select Database File"
         }
       },
       "overview": {
@@ -1095,9 +1102,11 @@
     },
     "hardware": {
       "dialogs": {
+        "unsavedChangesMessage": "You have unsaved changes. Do you want to save them?",
         "discardChangesMessage": "Are you sure you want to discard your changes?",
         "deleteDeviceMessage": "Are you sure to delete this device?",
         "warning": "Warning",
+        "save": "Save",
         "discard": "Discard",
         "cancel": "Cancel",
         "ok": "OK"
@@ -1106,7 +1115,8 @@
         "can": "CAN",
         "ethernet": "Ethernet",
         "lin": "LIN",
-        "pwm": "PWM"
+        "pwm": "PWM",
+        "serial": "Serial"
       },
       "vendors": {
         "ecubus": "ECUBUS",
@@ -1278,9 +1288,35 @@
           "inputFrequency": "Please input frequency",
           "inputInitialDutyCycle": "Please input initial duty cycle"
         }
+      },
+      "serialNode": {
+        "sections": {
+          "device": "Device",
+          "serialParameters": "Serial Parameters"
+        },
+        "labels": {
+          "name": "Name",
+          "vendor": "Vendor",
+          "port": "Port",
+          "refresh": "Refresh",
+          "baudRate": "Baud Rate",
+          "dataBits": "Data Bits",
+          "stopBits": "Stop Bits",
+          "parity": "Parity"
+        },
+        "buttons": {
+          "addDevice": "Add Device",
+          "saveDevice": "Save Device"
+        },
+        "validation": {
+          "nameExists": "The name already exists",
+          "inputNodeName": "Please input node name",
+          "selectPort": "Please select serial port",
+          "inputBaudRate": "Please input baud rate"
+        }
       }
 
-      
+
     },
     "components": {
         "addVar": {
@@ -1799,6 +1835,7 @@
       "sequence": {
         "tooltips": {
           "addSequence": "Add a new sequence",
+          "copySequence": "Duplicate the current sequence",
           "testerPresent": "Tester Present Control",
           "runSequence": "Run chosen sequence",
           "stopSequence": "Stop chosen sequence",
@@ -1818,7 +1855,8 @@
         },
         "messages": {
           "onlyDuringMeasurement": "Sequence can only be start during a running measurement"
-        }
+        },
+        "copyNameTemplate": "{{name}} (copy)"
       },
       "service": {
         "labels": {
@@ -1877,6 +1915,7 @@
         },
         "tooltips": {
           "addService": "Add a new service",
+          "copyService": "Duplicate selected service row",
           "removeService": "Remove"
         },
         "columns": {
@@ -2054,6 +2093,7 @@
     },
     "trace": {
       "defaultName": "Trace",
+      "resetColumns": "Reset Columns",
       "tooltips": {
         "clearTrace": "Clear Trace",
         "resume": "Resume",
@@ -2079,11 +2119,18 @@
         "nameNotEmpty": "Name can't be empty"
       },
       "messages": {
-        "startTrace": "Start Trace"
+        "startTrace": "Start Trace",
+        "parsingFile": "Parsing file...",
+        "parseComplete": "Parsed {{count}} frames from {{channels}} channels",
+        "parseError": "Failed to parse file: {{msg}}",
+        "unsupportedFormat": "Unsupported file format. Please drop a .blf or .asc file.",
+        "dropFileHint": "Drop BLF/ASC file here",
+        "loadMore": "Load More"
       },
       "filters": {
         "can": "CAN",
         "lin": "LIN",
+        "serial": "Serial",
         "uds": "UDS",
         "eth": "ETH",
         "someip": "SomeIP",
@@ -2202,6 +2249,7 @@
         "ethernet": "Ethernet",
         "node": "Node",
         "pwm": "PWM",
+        "serial": "Serial Port",
         "loggers": "Loggers",
         "replays": "Replays",
         "someip": "SomeIP"
@@ -2211,6 +2259,11 @@
         "warning": "Warning",
         "ok": "OK",
         "cancel": "Cancel"
+      },
+      "contextMenu": {
+        "edit": "Edit",
+        "copy": "Copy",
+        "delete": "Delete"
       },
       "names": {
         "nodeTemplate": "Node {{count}}",
@@ -2298,7 +2351,8 @@
           "format": "Format",
           "mode": "Mode",
           "speedFactor": "Speed Factor",
-          "repeatCount": "Repeat Count"
+          "repeatCount": "Repeat Count",
+          "useOriginalTime": "Original Time"
         },
         "placeholders": {
           "name": "Name",
@@ -2318,7 +2372,8 @@
         },
         "hints": {
           "speedFactor": "1.0 = original, 0 = as fast as possible",
-          "repeatCount": "0 = infinite loop"
+          "repeatCount": "0 = infinite loop",
+          "useOriginalTime": "Use recording time from log file for UTC Time"
         },
         "buttons": {
           "browse": "Browse",
@@ -2470,6 +2525,14 @@
         "transfer": {
           "valid": "Valid",
           "assigned": "Assigned"
+        },
+        "contextMenu": {
+          "addFrame": "Add Frame",
+          "deleteFrame": "Delete Frame",
+          "deleteAllFrames": "Delete All Frames",
+          "selectFrameFromDatabase": "Select Frame from Database",
+          "copy": "Copy",
+          "paste": "Paste"
         }
       },
       "canisignale": {
@@ -2579,6 +2642,7 @@
       "testLog": {
         "testStarting": "----- Test {{name}} starting -----",
         "testPassed": "----- Test {{name}} passed, {{duration}}ms -----",
+        "testSkipped": "----- Test {{name}} skipped, {{duration}}ms -----",
         "testFailed": "----- Test {{name}} failed, {{duration}}ms, details: {{error}} -----",
         "testDiagnostic": "Test Diagnostic"
       }
@@ -2586,7 +2650,8 @@
     "someip": {
       "serviceConfig": {
         "sections": {
-          "communicationConfig": "Communication Configuration"
+          "communicationConfig": "Communication Configuration",
+          "eventsAndGroups": "Events & event groups"
         },
         "labels": {
           "serviceId": "Service ID",
@@ -2598,12 +2663,26 @@
           "enableMagicCookies": "Enable Magic Cookies",
           "unreliableUdp": "Unreliable (UDP)",
           "enableUdpCommunication": "Enable UDP Communication",
-          "udpPort": "UDP Port"
+          "udpPort": "UDP Port",
+          "eventId": "Event ID",
+          "isField": "Field",
+          "isReliableEvent": "Reliable event",
+          "updateCycleMs": "Cycle (ms)",
+          "eventgroupId": "Event group ID",
+          "eventsInGroup": "Events in group"
         },
         "placeholders": {
           "serviceId": "0x1234",
           "instanceId": "0x5678",
-          "unicastAddress": "192.168.1.100"
+          "unicastAddress": "192.168.1.100",
+          "eventId": "0x8777",
+          "eventIds": "Select or enter event IDs",
+          "eventgroupId": "0x4455"
+        },
+        "buttons": {
+          "addEvent": "Add event",
+          "addEventgroup": "Add event group",
+          "remove": "Remove"
         },
         "tooltips": {
           "serviceId": "The unique identifier of the service in hexadecimal format (e.g., 0x1234). This ID must be unique within the system.",
@@ -2613,7 +2692,9 @@
           "tcpPort": "The TCP port number for reliable communication. Must be between 1 and 65535.",
           "enableMagicCookies": "Enable magic cookies for TCP connections. Magic cookies help detect if the remote endpoint supports SOME/IP protocol.",
           "unreliableUdp": "Enable unreliable UDP communication for this service. UDP provides faster communication but without delivery guarantees.",
-          "udpPort": "The UDP port number for unreliable communication. Must be between 1 and 65535."
+          "udpPort": "The UDP port number for unreliable communication. Must be between 1 and 65535.",
+          "eventsSection": "Declarative vSomeIP service events and event groups. These entries are written into the generated application JSON (string booleans on events).",
+          "updateCycleMs": "Optional `cycle` in milliseconds (periodic send interval). Leave empty to omit from the stored service model."
         },
         "validation": {
           "inputServiceId": "Please input service ID",
@@ -2627,6 +2708,7 @@
         "tooltips": {
           "editConnect": "Edit Connect",
           "addFrame": "Add Frame",
+          "copyFrame": "Duplicate selected row",
           "selectFrameFromDatabase": "Select Frame from Database",
           "editFrame": "Edit Frame",
           "deleteFrame": "Delete Frame"
@@ -2636,6 +2718,10 @@
           "serviceId": "Service ID",
           "instanceId": "Instance ID",
           "methodId": "Method ID",
+          "eventId": "Event ID",
+          "eventGroupId": "Event group ID",
+          "eventRequestType": "Event type (request_event)",
+          "someipOperation": "Operation",
           "messageType": "Message Type",
           "protocolVersion": "Protocol Version",
           "interfaceVersion": "Interface Version",
@@ -2644,16 +2730,21 @@
           "channel": "Channel",
           "reliable": "Reliable",
           "onKey": "On Key:",
-          "period": "Period (ms):"
+          "period": "Period (ms):",
+          "subscribeTimeout": "Subscribe timeout (ms)",
+          "responseTimeout": "Response timeout (ms)"
         },
         "columns": {
           "send": "Send",
           "trigger": "Trigger",
           "name": "Name",
           "messageType": "Message Type",
+          "someipOp": "Operation",
+          "eventGroupId": "Event group",
           "serviceId": "Service ID",
           "instanceId": "Instance ID",
           "methodId": "Method ID",
+          "methodOrEventId": "Method / Event ID",
           "channel": "Channel",
           "params": "Params"
         },
@@ -2661,6 +2752,11 @@
           "triggerType": {
             "manual": "Manual",
             "periodic": "Periodic"
+          },
+          "someipOperation": {
+            "send": "Send message",
+            "subscribe": "Subscribe (receive events)",
+            "unsubscribe": "Unsubscribe"
           },
           "messageType": {
             "request": "Request",
@@ -2682,12 +2778,16 @@
           "interfaceVersion": "0",
           "majorVersion": "0",
           "minorVersion": "0",
-          "reliable": "False"
+          "reliable": "False",
+          "eventIdHex": "e.g. 0x8001"
         },
         "dialogs": {
           "deviceConnect": "IA Device Connect",
           "editFrame": "Edit Frame {{name}}",
           "selectFrameFromDatabase": "Select Frame from Database"
+        },
+        "notifications": {
+          "subscribeManualOnly": "Subscribe and unsubscribe can only use a manual trigger, not periodic."
         },
         "transfer": {
           "valid": "Valid",

@@ -38,10 +38,11 @@ import { getParamBuffer, getTxPdu, UdsAddress, UdsDevice } from '../share/uds'
 import { TesterInfo } from '../share/tester'
 import log from 'electron-log'
 import Transport from 'winston-transport'
-import { addTransport, removeTransport, UdsLOG, VarLOG } from '../log'
+import { addDeviceTransport, removeDeviceTransport, UdsLOG, VarLOG } from '../log'
 import { clientTcp, DOIP, getEthDevices } from './../doip'
 import { EthAddr, EthBaseInfo } from '../share/doip'
 import { createPwmDevice, getValidPwmDevices, PwmBase } from '../pwm'
+import { SerialBase } from '../serial'
 
 import { getCanDevices, openCanDevice } from '../docan/can'
 import dllLib from '../../../resources/lib/zlgcan.dll?asset&asarUnpack'
@@ -82,7 +83,9 @@ import {
 
 import TraceItem from '../ostrace/item'
 import { startPlugins, stopPlugins } from './plugin'
-import Replay from '../replay'
+import Replay, { ReplayReader } from '../replay'
+import { BlfReader } from '../replay/blfReader'
+import { AscReader } from '../replay/ascReader'
 import { trackEvent } from '../analytics'
 
 const libPath = path.dirname(dllLib)
@@ -200,7 +203,17 @@ ipcMain.handle('ipc-run-test', async (event, ...arg) => {
       testOnly: false
     }
   )
-  node.init(test, canBaseMap, linBaseMap, doips, ethBaseMap, pwmBaseMap, someipMap, testers)
+  node.init(
+    test,
+    canBaseMap,
+    linBaseMap,
+    doips,
+    ethBaseMap,
+    pwmBaseMap,
+    someipMap,
+    serialBaseMap,
+    testers
+  )
   await node.start(testControl)
   testMap.set(test.id, node)
   try {
@@ -289,6 +302,7 @@ const canBaseMap = new Map<string, CanBase>()
 const ethBaseMap = new Map<string, EthBaseInfo>()
 const linBaseMap = new Map<string, LinBase>()
 const pwmBaseMap = new Map<string, PwmBase>()
+const serialBaseMap = new Map<string, SerialBase>()
 const someipMap = new Map<string, VSomeIP_Client>()
 const udsTesterMap = new Map<string, UDSTesterMain>()
 const nodeMap = new Map<string, NodeItemA>()
@@ -316,6 +330,9 @@ function getDeviceSymbol(data: UdsDevice) {
       break
     case 'someip':
       vendor = 'pc'
+      break
+    case 'serial':
+      vendor = data.serialDevice?.vendor
       break
     default:
       break
@@ -431,6 +448,23 @@ async function globalStart(data: DataSet, projectInfo: { path: string; name: str
           })
           pwmBaseMap.set(key, pwmBase)
         }
+      } else if (device.type == 'serial' && device.serialDevice) {
+        channleList.push(device.serialDevice.id)
+        const serialDevice = device.serialDevice
+        activeKey = serialDevice.name
+        const serialBase = new SerialBase(serialDevice)
+        await serialBase.open()
+        sysLog.info(
+          `start serial device ${serialDevice.vendor}-${serialDevice.device.handle} success`
+        )
+        serialBase.event.on('error', (e: Error) => {
+          sysLog.error(`${serialDevice.vendor}-${serialDevice.device.handle} error: ${e.message}`)
+        })
+        serialBase.event.on('close', () => {
+          sysLog.error(`${serialDevice.vendor}-${serialDevice.device.handle} closed`)
+          globalStop(true)
+        })
+        serialBaseMap.set(key, serialBase)
       } else if (device.type == 'someip' && device.someipDevice) {
         channleList.push(device.someipDevice.id)
         const val = device.someipDevice
@@ -441,6 +475,27 @@ async function globalStart(data: DataSet, projectInfo: { path: string; name: str
         }
         const client = new VSomeIP_Client(val.name, file, val)
         client.init()
+
+        client.attachSomeipMessage((msg) => {
+          if (
+            msg.sending === false &&
+            (msg.messageType === SomeipMessageType.NOTIFICATION ||
+              msg.messageType === SomeipMessageType.NOTIFICATION_ACK)
+          ) {
+            const payload = Buffer.isBuffer(msg.payload) ? [...msg.payload] : []
+            BrowserWindow.getAllWindows().forEach((win) => {
+              win.webContents.send('someip-incoming-notification', {
+                deviceKey: key,
+                service: msg.service,
+                instance: msg.instance,
+                method: msg.method,
+                messageType: msg.messageType,
+                returnCode: msg.returnCode,
+                payload
+              })
+            })
+          }
+        })
 
         someipMap.set(key, client)
       }
@@ -609,6 +664,7 @@ async function globalStart(data: DataSet, projectInfo: { path: string; name: str
       ethBaseMap,
       pwmBaseMap,
       someipMap,
+      serialBaseMap,
       data.tester
     )
     try {
@@ -636,6 +692,7 @@ async function globalStart(data: DataSet, projectInfo: { path: string; name: str
     ethBaseMap,
     pwmBaseMap,
     someipMap,
+    serialBaseMap,
     data.tester
   )
   canBaseMap.forEach((base) => {
@@ -694,7 +751,7 @@ ipcMain.handle('ipc-global-start', async (event, ...arg) => {
 
   global.dataSet = data
   for (const t of exTransportList) {
-    removeTransport(t)
+    removeDeviceTransport(t)
   }
   exTransportList.splice(0, exTransportList.length)
 
@@ -742,8 +799,10 @@ ipcMain.handle('ipc-global-start', async (event, ...arg) => {
 
       const id =
         log.format === 'blf'
-          ? addTransport(() => blfTransport(log.path, log.channel, log.method, log.compression))
-          : addTransport(() => ascTransport(log.path, log.channel, log.method))
+          ? addDeviceTransport(() =>
+              blfTransport(log.path, log.channel, log.method, log.compression)
+            )
+          : addDeviceTransport(() => ascTransport(log.path, log.channel, log.method))
 
       exTransportList.push(id)
     }
@@ -853,6 +912,7 @@ interface timerType {
   data: Buffer | null
 }
 const timerMap = new Map<string, timerType>()
+const someipPeriodMap = new Map<string, { clientKey: string }>()
 
 export function globalStop(emit = false) {
   trackEvent('app_stop')
@@ -879,6 +939,13 @@ export function globalStop(emit = false) {
     value.socket.close()
   })
   timerMap.clear()
+  someipPeriodMap.forEach((value, key) => {
+    const client = someipMap.get(value.clientKey)
+    if (client) {
+      void client.stopPeriodicMessage(key)
+    }
+  })
+  someipPeriodMap.clear()
 
   //testMap
   testMap.forEach((value) => {
@@ -902,6 +969,11 @@ export function globalStop(emit = false) {
     value.close()
   })
   pwmBaseMap.clear()
+  serialBaseMap.forEach((value) => {
+    value.close()
+    sysLog.info(`stop serial device ${value.info.vendor}-${value.info.device.handle}`)
+  })
+  serialBaseMap.clear()
 
   nodeMap.forEach((value) => {
     value.close()
@@ -929,7 +1001,7 @@ export function globalStop(emit = false) {
   ortiMap.clear()
 
   for (const t of exTransportList) {
-    removeTransport(t)
+    removeDeviceTransport(t)
   }
   exTransportList.splice(0, exTransportList.length)
 
@@ -1369,6 +1441,41 @@ ipcMain.handle('ipc-send-someip', async (event, ...arg) => {
 
   const base = someipMap.get(ia.channel) as VSomeIP_Client
   if (base) {
+    const op = ia.someipOp ?? 'send'
+    if (op === 'subscribe') {
+      const eg = ia.eventGroupId != null && ia.eventGroupId !== '' ? Number(ia.eventGroupId) : NaN
+      if (!Number.isFinite(eg)) {
+        throw new Error('Subscribe requires a valid eventGroupId')
+      }
+      await base.subscribeToEvent(
+        Number(ia.serviceId),
+        Number(ia.instanceId),
+        eg,
+        Number(ia.methodId),
+        Number(ia.major || 0),
+        Number(ia.responseTimeout || 1000),
+        ia.someipEventType != null && Number.isFinite(Number(ia.someipEventType))
+          ? Number(ia.someipEventType)
+          : 2
+      )
+      return { ok: true }
+    }
+    if (op === 'unsubscribe') {
+      const eg = ia.eventGroupId != null && ia.eventGroupId !== '' ? Number(ia.eventGroupId) : NaN
+      if (!Number.isFinite(eg)) {
+        throw new Error('Unsubscribe requires a valid eventGroupId')
+      }
+      await base.unsubscribeFromEvent(
+        Number(ia.serviceId),
+        Number(ia.instanceId),
+        eg,
+        Number(ia.methodId),
+        Number(ia.major || 0),
+        Number(ia.responseTimeout || 1000)
+      )
+      return { ok: true }
+    }
+
     const msg: SomeipMessage = {
       service: Number(ia.serviceId),
       instance: Number(ia.instanceId),
@@ -1384,15 +1491,226 @@ ipcMain.handle('ipc-send-someip', async (event, ...arg) => {
       reliable: ia.reliable,
       sending: true
     }
-    await base.requestService(
-      Number(ia.serviceId),
-      Number(ia.instanceId),
-      Number(ia.major || 0),
-      Number(ia.minor || 0),
-      1000
-    )
-    await base.sendRequest(msg)
+    const skipRequest =
+      ia.messageType === SomeipMessageType.NOTIFICATION ||
+      ia.messageType === SomeipMessageType.NOTIFICATION_ACK
+    if (!skipRequest) {
+      await base.requestService(
+        Number(ia.serviceId),
+        Number(ia.instanceId),
+        Number(ia.major || 0),
+        Number(ia.minor || 0),
+        1000
+      )
+    }
+    if (ia.messageType === SomeipMessageType.REQUEST) {
+      return await base.sendRequestAndWaitResponse(msg, Number(ia.responseTimeout || 1000))
+    } else {
+      await base.sendRequest(msg)
+      return null
+    }
   } else {
-    sysLog.error(`someip device not found`)
+    const errMsg = `someip device not found: ${ia.channel || 'unknown channel'}`
+    sysLog.error(errMsg)
+    throw new Error(errMsg)
   }
+})
+
+ipcMain.on('ipc-send-someip-period', async (event, ...arg) => {
+  const id = arg[0] as string
+  const ia = arg[1] as SomeipAction
+  const base = someipMap.get(ia.channel) as VSomeIP_Client
+  if (!base) {
+    sysLog.error(`someip device not found: ${ia.channel || 'unknown channel'}`)
+    return
+  }
+  const op = ia.someipOp ?? 'send'
+  if (op !== 'send') {
+    return
+  }
+
+  const msg: SomeipMessage = {
+    service: Number(ia.serviceId),
+    instance: Number(ia.instanceId),
+    method: Number(ia.methodId),
+    payload: getParamBuffer(ia.params),
+    messageType: ia.messageType,
+    client: 0,
+    session: 0,
+    returnCode: 0,
+    protocolVersion: ia.protocolVersion != undefined ? Number(ia.protocolVersion) : 1,
+    interfaceVersion: ia.interfaceVersion != undefined ? Number(ia.interfaceVersion) : 0,
+    ts: 0,
+    reliable: ia.reliable,
+    sending: true
+  }
+
+  const asNotify =
+    ia.messageType === SomeipMessageType.NOTIFICATION ||
+    ia.messageType === SomeipMessageType.NOTIFICATION_ACK
+
+  try {
+    if (!asNotify) {
+      await base.requestService(
+        Number(ia.serviceId),
+        Number(ia.instanceId),
+        Number(ia.major || 0),
+        Number(ia.minor || 0),
+        1000
+      )
+    }
+    await base.startPeriodicMessage(id, msg, Number(ia.trigger.period || 10), asNotify, false)
+    someipPeriodMap.set(id, { clientKey: ia.channel })
+  } catch (e: any) {
+    sysLog.error(`start someip periodic failed (${id}): ${e?.message || e}`)
+  }
+})
+
+ipcMain.on('ipc-update-someip-period', async (event, ...arg) => {
+  const id = arg[0] as string
+  const ia = arg[1] as SomeipAction
+  const rec = someipPeriodMap.get(id)
+  const key = ia.channel || rec?.clientKey
+  const base = key ? (someipMap.get(key) as VSomeIP_Client) : undefined
+  if (!base) return
+  const op = ia.someipOp ?? 'send'
+  if (op !== 'send') return
+
+  const msg: SomeipMessage = {
+    service: Number(ia.serviceId),
+    instance: Number(ia.instanceId),
+    method: Number(ia.methodId),
+    payload: getParamBuffer(ia.params),
+    messageType: ia.messageType,
+    client: 0,
+    session: 0,
+    returnCode: 0,
+    protocolVersion: ia.protocolVersion != undefined ? Number(ia.protocolVersion) : 1,
+    interfaceVersion: ia.interfaceVersion != undefined ? Number(ia.interfaceVersion) : 0,
+    ts: 0,
+    reliable: ia.reliable,
+    sending: true
+  }
+
+  const asNotify =
+    ia.messageType === SomeipMessageType.NOTIFICATION ||
+    ia.messageType === SomeipMessageType.NOTIFICATION_ACK
+  try {
+    await base.updatePeriodicMessage(id, msg, asNotify, false)
+  } catch {
+    // ignore update failures when periodic task has already been stopped
+  }
+})
+
+ipcMain.on('ipc-stop-someip-period', async (event, ...arg) => {
+  const id = arg[0] as string
+  const rec = someipPeriodMap.get(id)
+  if (!rec) return
+  const base = someipMap.get(rec.clientKey) as VSomeIP_Client
+  try {
+    if (base) {
+      await base.stopPeriodicMessage(id)
+    }
+  } finally {
+    someipPeriodMap.delete(id)
+  }
+})
+
+// Parse BLF/ASC trace file for drag-and-drop viewing (paginated API)
+type TraceFileFrame = {
+  channel: number
+  ts: number
+  id: number
+  dir: string
+  msgType: { idType: string; brs: boolean; canfd: boolean; remote: boolean }
+  data: number[]
+  isError?: boolean
+}
+
+const traceFileSessions = new Map<
+  string,
+  { frames: TraceFileFrame[]; channels: number[]; measurementStartTimeMs: number }
+>()
+let traceSessionCounter = 0
+
+ipcMain.handle(
+  'ipc-trace-file-open',
+  async (
+    _event,
+    filePath: string
+  ): Promise<{
+    sessionId: string
+    totalFrames: number
+    channels: number[]
+    measurementStartTimeMs: number
+  }> => {
+    const ext = path.extname(filePath).toLowerCase()
+    let reader: ReplayReader
+    if (ext === '.blf') {
+      reader = new BlfReader(filePath, 0)
+    } else if (ext === '.asc') {
+      reader = new AscReader(filePath, 0)
+    } else {
+      throw new Error(`Unsupported file format: ${ext}`)
+    }
+
+    reader.init()
+    const frames: TraceFileFrame[] = []
+    const channelSet = new Set<number>()
+
+    let frame = await reader.readFrame()
+    while (frame) {
+      channelSet.add(frame.channel)
+      frames.push({
+        channel: frame.channel,
+        ts: frame.ts,
+        id: frame.id,
+        dir: frame.dir,
+        msgType: {
+          idType: frame.msgType.idType,
+          brs: frame.msgType.brs,
+          canfd: frame.msgType.canfd,
+          remote: frame.msgType.remote
+        },
+        data: Array.from(frame.data),
+        isError: frame.isError
+      })
+      frame = await reader.readFrame()
+    }
+
+    const measurementStartTimeMs = reader.measurementStartTimeMs ?? 0
+    reader.close()
+
+    const sessionId = `trace-${++traceSessionCounter}`
+    const channels = Array.from(channelSet).sort((a, b) => a - b)
+    traceFileSessions.set(sessionId, { frames, channels, measurementStartTimeMs })
+
+    return { sessionId, totalFrames: frames.length, channels, measurementStartTimeMs }
+  }
+)
+
+ipcMain.handle(
+  'ipc-trace-file-page',
+  async (
+    _event,
+    sessionId: string,
+    page: number,
+    pageSize: number
+  ): Promise<{ frames: TraceFileFrame[]; totalFrames: number; prevLastTs: number }> => {
+    const session = traceFileSessions.get(sessionId)
+    if (!session) throw new Error('Session not found')
+
+    const start = page * pageSize
+    const end = Math.min(start + pageSize, session.frames.length)
+    const prevLastTs = start > 0 ? session.frames[start - 1].ts : -1
+    return {
+      frames: session.frames.slice(start, end),
+      totalFrames: session.frames.length,
+      prevLastTs
+    }
+  }
+)
+
+ipcMain.handle('ipc-trace-file-close', async (_event, sessionId: string) => {
+  traceFileSessions.delete(sessionId)
 })

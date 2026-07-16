@@ -6,7 +6,7 @@
         "linDevice": {
           "device": {
             "label": "",
-            "handle": "COM8",
+            "handle": "COM4",
             "id": ""
           },
           "name": "ECUBUS_1",
@@ -14,7 +14,7 @@
           "vendor": "ecubus",
           "baudRate": 19200,
           "mode": "MASTER",
-          "database": "8d0116f8-c6d5-4a9d-bde9-cdb3baeef8c8"
+          "database": "b331d853-927d-4b8a-b736-6ad2ca389ef2"
         }
       }
     },
@@ -39,7 +39,7 @@
         "channel": [
           "3e8f62b0-63bf-4a3a-9bce-078faf1aced8"
         ],
-        "workNode": "2_2:Motor1",
+        "workNode": "LINdb:Motor1",
         "script": "node.ts"
       },
       "db6f596a-77a9-422f-bca2-931d129a7cd9": {
@@ -48,12 +48,12 @@
         "channel": [
           "3e8f62b0-63bf-4a3a-9bce-078faf1aced8"
         ],
-        "workNode": "2_2:SeatECU"
+        "workNode": "LINdb:SeatECU"
       }
     },
     "database": {
       "lin": {
-        "8d0116f8-c6d5-4a9d-bde9-cdb3baeef8c8": {
+        "b331d853-927d-4b8a-b736-6ad2ca389ef2": {
           "eventTriggeredFrames": {
             "ETF_MotorStates": {
               "name": "ETF_MotorStates",
@@ -90,7 +90,7 @@
                   }
                 }
               ],
-              "_X_ROW_KEY": "row_218"
+              "_X_ROW_KEY": "row_398"
             },
             "encTemperature": {
               "name": "encTemperature",
@@ -104,65 +104,53 @@
                     "offset": -20,
                     "textInfo": "Degree"
                   }
-                },
-                {
-                  "type": "logicalValue",
-                  "logicalValue": {
-                    "signalValue": 0,
-                    "textInfo": "Initial"
-                  }
-                },
-                {
-                  "type": "logicalValue",
-                  "logicalValue": {
-                    "signalValue": 1,
-                    "textInfo": "LON"
-                  }
-                },
-                {
-                  "type": "logicalValue",
-                  "logicalValue": {
-                    "signalValue": 2,
-                    "textInfo": "NORMAL"
-                  }
-                },
-                {
-                  "type": "logicalValue",
-                  "logicalValue": {
-                    "signalValue": 3,
-                    "textInfo": "HIGH"
-                  }
-                },
-                {
-                  "type": "logicalValue",
-                  "logicalValue": {
-                    "signalValue": 4,
-                    "textInfo": "Reserved"
-                  }
-                },
-                {
-                  "type": "logicalValue",
-                  "logicalValue": {
-                    "signalValue": 5,
-                    "textInfo": "Reserved"
-                  }
-                },
-                {
-                  "type": "logicalValue",
-                  "logicalValue": {
-                    "signalValue": 6,
-                    "textInfo": "Reserved"
-                  }
-                },
-                {
-                  "type": "logicalValue",
-                  "logicalValue": {
-                    "signalValue": 7,
-                    "textInfo": "Invalid"
-                  }
                 }
               ],
-              "_X_ROW_KEY": "row_219"
+              "_X_ROW_KEY": "row_399"
+            }
+          },
+          "nodeAttrs": {
+            "Motor1": {
+              "LIN_protocol": "2.2",
+              "configured_NAD": 2,
+              "initial_NAD": 2,
+              "supplier_id": 30,
+              "function_id": 1,
+              "variant": 0,
+              "response_error": "Motor1LinError",
+              "fault_state_signals": [],
+              "P2_min": 100,
+              "ST_min": 20,
+              "N_As_timeout": 1000,
+              "N_Cr_timeout": 1000,
+              "configFrames": [
+                "MotorControl",
+                "Motor1State_Cycl",
+                "Motor1State_Event",
+                "ETF_MotorStates",
+                "Motor1_Dynamic"
+              ]
+            },
+            "Motor2": {
+              "LIN_protocol": "2.2",
+              "configured_NAD": 3,
+              "initial_NAD": 3,
+              "supplier_id": 30,
+              "function_id": 1,
+              "variant": 0,
+              "response_error": "Motor2LinError",
+              "fault_state_signals": [],
+              "P2_min": 100,
+              "ST_min": 20,
+              "N_As_timeout": 1000,
+              "N_Cr_timeout": 1000,
+              "configFrames": [
+                "MotorControl",
+                "Motor2State_Cycl",
+                "Motor2State_Event",
+                "ETF_MotorStates",
+                "Motor2_Dynamic"
+              ]
             }
           },
           "global": {
@@ -239,7 +227,7 @@
             },
             "Motor1Temp": {
               "signalName": "Motor1Temp",
-              "signalSizeBits": 7,
+              "signalSizeBits": 8,
               "initValue": 5,
               "punishedBy": "Motor1",
               "subscribedBy": [
@@ -321,8 +309,7 @@
                 "Motor1",
                 "Motor2"
               ],
-              "singleType": "Scalar",
-              "value": 1
+              "singleType": "Scalar"
             },
             "MotorSelection": {
               "signalName": "MotorSelection",
@@ -372,7 +359,7 @@
                 },
                 {
                   "name": "Motor1Position",
-                  "offset": 7
+                  "offset": 8
                 },
                 {
                   "name": "Motor1LinError",
@@ -416,18 +403,15 @@
               "signals": [
                 {
                   "name": "Motor2Temp",
-                  "offset": 0,
-                  "_X_ROW_KEY": "row_320"
+                  "offset": 0
                 },
                 {
                   "name": "Motor2Position",
-                  "offset": 8,
-                  "_X_ROW_KEY": "row_321"
+                  "offset": 8
                 },
                 {
                   "name": "Motor2LinError",
-                  "offset": 40,
-                  "_X_ROW_KEY": "row_322"
+                  "offset": 40
                 }
               ]
             },
@@ -455,63 +439,16 @@
               "signals": [
                 {
                   "name": "MotorDirection",
-                  "offset": 0,
-                  "_X_ROW_KEY": "row_332"
+                  "offset": 0
                 },
                 {
                   "name": "MotorSpeed",
-                  "offset": 2,
-                  "_X_ROW_KEY": "row_333"
+                  "offset": 2
                 },
                 {
                   "name": "MotorSelection",
-                  "offset": 12,
-                  "_X_ROW_KEY": "row_334"
+                  "offset": 12
                 }
-              ]
-            }
-          },
-          "nodeAttrs": {
-            "Motor1": {
-              "LIN_protocol": "2.2",
-              "configured_NAD": 2,
-              "initial_NAD": 2,
-              "supplier_id": 30,
-              "function_id": 1,
-              "variant": 0,
-              "response_error": "Motor1LinError",
-              "fault_state_signals": [],
-              "P2_min": 100,
-              "ST_min": 20,
-              "N_As_timeout": 1000,
-              "N_Cr_timeout": 1000,
-              "configFrames": [
-                "MotorControl",
-                "Motor1State_Cycl",
-                "Motor1State_Event",
-                "ETF_MotorStates",
-                "Motor1_Dynamic"
-              ]
-            },
-            "Motor2": {
-              "LIN_protocol": "2.2",
-              "configured_NAD": 3,
-              "initial_NAD": 3,
-              "supplier_id": 30,
-              "function_id": 1,
-              "variant": 0,
-              "response_error": "Motor2LinError",
-              "fault_state_signals": [],
-              "P2_min": 100,
-              "ST_min": 20,
-              "N_As_timeout": 1000,
-              "N_Cr_timeout": 1000,
-              "configFrames": [
-                "MotorControl",
-                "Motor2State_Cycl",
-                "Motor2State_Event",
-                "ETF_MotorStates",
-                "Motor2_Dynamic"
               ]
             }
           },
@@ -535,7 +472,7 @@
                   "isCommand": false
                 }
               ],
-              "_X_ROW_KEY": "row_209"
+              "_X_ROW_KEY": "row_389"
             },
             {
               "name": "DynamicTable",
@@ -551,7 +488,7 @@
                   "isCommand": false
                 }
               ],
-              "_X_ROW_KEY": "row_210"
+              "_X_ROW_KEY": "row_390"
             },
             {
               "name": "NormalTableEvent",
@@ -577,7 +514,7 @@
                   "isCommand": false
                 }
               ],
-              "_X_ROW_KEY": "row_211"
+              "_X_ROW_KEY": "row_391"
             },
             {
               "name": "InitTable",
@@ -664,7 +601,7 @@
                   }
                 }
               ],
-              "_X_ROW_KEY": "row_212"
+              "_X_ROW_KEY": "row_392"
             },
             {
               "name": "ETF_CollisionResolving",
@@ -680,11 +617,11 @@
                   "isCommand": false
                 }
               ],
-              "_X_ROW_KEY": "row_213"
+              "_X_ROW_KEY": "row_393"
             }
           ],
-          "name": "2_2",
-          "id": "8d0116f8-c6d5-4a9d-bde9-cdb3baeef8c8"
+          "name": "LINdb",
+          "id": "b331d853-927d-4b8a-b736-6ad2ca389ef2"
         }
       },
       "can": {},
@@ -712,8 +649,91 @@
         ]
       }
     },
-    "traces": {},
-    "pluginData": {}
+    "traces": {
+      "": {
+        "id": "",
+        "name": "Trace",
+        "filter": [
+          "canBase",
+          "ipBase",
+          "linBase",
+          "uds",
+          "someipBase",
+          "osTrace"
+        ],
+        "filterDevice": [],
+        "filterId": [],
+        "columnConfig": [
+          {
+            "key": "seqIndex",
+            "visible": true,
+            "width": 80
+          },
+          {
+            "key": "ts",
+            "visible": true,
+            "width": 200
+          },
+          {
+            "key": "deltaTs",
+            "visible": true,
+            "width": 120
+          },
+          {
+            "key": "absTimeStr",
+            "visible": true,
+            "width": 200
+          },
+          {
+            "key": "name",
+            "visible": true,
+            "width": 200
+          },
+          {
+            "key": "data",
+            "visible": true,
+            "width": 300
+          },
+          {
+            "key": "dir",
+            "visible": true,
+            "width": 50
+          },
+          {
+            "key": "id",
+            "visible": true,
+            "width": 100
+          },
+          {
+            "key": "dlc",
+            "visible": true,
+            "width": 100
+          },
+          {
+            "key": "len",
+            "visible": true,
+            "width": 100
+          },
+          {
+            "key": "msgType",
+            "visible": true,
+            "width": 100
+          },
+          {
+            "key": "channel",
+            "visible": true,
+            "width": 100
+          },
+          {
+            "key": "device",
+            "visible": true,
+            "width": 200
+          }
+        ]
+      }
+    },
+    "pluginData": {},
+    "replays": {}
   },
   "project": {
     "wins": {
@@ -721,8 +741,8 @@
         "pos": {
           "x": 383,
           "y": 166,
-          "w": 2560,
-          "h": 220
+          "w": 2562,
+          "h": 434
         },
         "options": {
           "params": {}
@@ -773,29 +793,16 @@
       },
       "trace": {
         "pos": {
-          "x": 0,
-          "y": 337.6666666666667,
+          "x": 289,
+          "y": 323.65625,
           "w": 1280,
-          "h": 337.6666666666667
+          "h": 599.656
         },
         "title": "trace",
         "label": "Trace",
         "id": "trace",
         "options": {},
         "hide": false
-      },
-      "hardware": {
-        "pos": {
-          "x": 980,
-          "y": 306.5,
-          "w": 600,
-          "h": 400
-        },
-        "title": "hardware",
-        "label": "Devices",
-        "id": "hardware",
-        "options": {},
-        "hide": true
       },
       "69c0b8cc-f674-4142-99fc-9eed944cacf9": {
         "pos": {
@@ -819,7 +826,7 @@
           "x": 0,
           "y": 675.3333333333334,
           "w": 1280,
-          "h": 337.6666666666667
+          "h": 100
         },
         "title": "linPanel",
         "label": "Panel",
@@ -830,6 +837,18 @@
           },
           "name": "Node 1"
         }
+      },
+      "hardware": {
+        "pos": {
+          "x": 980,
+          "y": 199.5,
+          "w": 600,
+          "h": 400
+        },
+        "title": "hardware",
+        "label": "Devices",
+        "id": "hardware",
+        "options": {}
       }
     },
     "example": {

@@ -6,15 +6,15 @@ import { TesterInfo } from './share/tester'
 import { CanMessage, formatError } from './share/can'
 import { VinInfo } from './share/doip'
 import { LinMsg } from './share/lin'
+import { SerialMessage } from './share/serial'
 import reportPath from '../../resources/lib/js/report.js?asset&asarUnpack'
 import { pathToFileURL } from 'node:url'
 import { TestEvent } from 'node:test/reporters'
 import { UdsAddress } from './share/uds'
 import { SomeipMessage } from 'nodeCan/someip'
+import { VsomeipAvailabilityInfo } from './share/someip'
 import { error } from 'electron-log'
 import fs from 'fs'
-import { SerialPort, SerialPortOpenOptions } from 'serialport'
-import { AutoDetectTypes } from '@serialport/bindings-cpp'
 
 type HandlerMap = {
   output: (data: any) => Promise<number>
@@ -37,9 +37,18 @@ type HandlerMap = {
     data: linApiStartSch | linApiStopSch | linApiPowerCtrl | linApiBaudRateCtrl
   ) => void | Promise<number> | Promise<void>
   pwmApi: (data: pwmApiSetDuty) => void
-  canApi: (data: any) => void
+  canApi: (data: any) => Promise<any>
   pluginEvent: (data: { name: string; data: any }) => void
-  serialPortApi: (data: SerialPortApi) => Promise<any>
+  serialApi: (data: SerialApi) => Promise<number>
+  someipApi: (data: SomeipApiCall) => Promise<any>
+}
+
+/** Device-bound serial write request from a script node to {@link NodeClass.serialApi}. */
+export type SerialApi = {
+  method: 'write'
+  /** Device name to write to; defaults to the node's first serial channel */
+  device?: string
+  data: number[]
 }
 export type pwmApiSetDuty = {
   method: 'setDuty'
@@ -70,60 +79,50 @@ export type linApiBaudRateCtrl = {
   lincableCustomBaudRateBitMap: number
 }
 
-// SerialPort API types
-export type SerialPortOptions = {
-  path: string
-  baudRate: number
-  dataBits?: 5 | 6 | 7 | 8
-  stopBits?: 1 | 1.5 | 2
-  parity?: 'none' | 'even' | 'odd' | 'mark' | 'space'
-  rtscts?: boolean
-  xon?: boolean
-  xoff?: boolean
-}
+/** Payload from worker SOME/IP script helpers to {@link NodeClass.someipApi}. */
+export type SomeipApiCall =
+  | {
+      op: 'request'
+      channel?: string
+      msg: SomeipMessage
+      major?: number
+      minor?: number
+      timeout: number
+    }
+  | {
+      op: 'requestNoReturn'
+      channel?: string
+      msg: SomeipMessage
+      major?: number
+      minor?: number
+    }
+  | {
+      op: 'notify'
+      channel?: string
+      msg: SomeipMessage
+    }
+  | {
+      op: 'subscribe'
+      channel?: string
+      service: number
+      instance: number
+      eventgroup: number
+      event: number
+      major?: number
+      timeout: number
+      eventType: number
+    }
+  | {
+      op: 'unsubscribe'
+      channel?: string
+      service: number
+      instance: number
+      eventgroup: number
+      event?: number
+      major?: number
+      timeout: number
+    }
 
-export type SerialPortApiOpen = {
-  method: 'open'
-  options: SerialPortOptions
-}
-
-export type SerialPortApiClose = {
-  method: 'close'
-  id: string
-}
-
-export type SerialPortApiWrite = {
-  method: 'write'
-  id: string
-  data: number[] | Buffer
-}
-
-export type SerialPortApiList = {
-  method: 'list'
-}
-
-export type SerialPortApiSetSignals = {
-  method: 'setSignals'
-  id: string
-  signals: {
-    brk?: boolean
-    dtr?: boolean
-    rts?: boolean
-  }
-}
-
-export type SerialPortApiGetSignals = {
-  method: 'getSignals'
-  id: string
-}
-
-export type SerialPortApi =
-  | SerialPortApiOpen
-  | SerialPortApiClose
-  | SerialPortApiWrite
-  | SerialPortApiList
-  | SerialPortApiSetSignals
-  | SerialPortApiGetSignals
 type EventHandlerMap = {
   [K in keyof HandlerMap]: HandlerMap[K]
 }
@@ -493,9 +492,25 @@ export default class UdsTester {
       throw formatError(e)
     }
   }
+  async triggerSomeipServiceValid(info: VsomeipAvailabilityInfo) {
+    try {
+      const r = await this.workerEmit('__someipServiceValid', info)
+      return r
+    } catch (e: any) {
+      throw formatError(e)
+    }
+  }
   async triggerLinFrame(msg: LinMsg) {
     try {
       const r = await this.workerEmit('__linMsg', msg)
+      return r
+    } catch (e: any) {
+      throw formatError(e)
+    }
+  }
+  async triggerSerialFrame(msg: SerialMessage) {
+    try {
+      const r = await this.workerEmit('__serialMsg', msg)
       return r
     } catch (e: any) {
       throw formatError(e)
@@ -581,260 +596,5 @@ export default class UdsTester {
       hasPool: false, // Removed pool concept
       hasWorker: !!this.worker
     }
-  }
-}
-
-/**
- * SerialPortManager - Manages multiple serial ports for worker communication
- * Allows workers to create, read, write, and close serial ports via API
- */
-export class SerialPortManager {
-  private ports: Map<string, SerialPort> = new Map()
-  private tester: UdsTester
-
-  constructor(tester: UdsTester) {
-    this.tester = tester
-  }
-
-  /**
-   * Handle serialPortApi calls from worker
-   */
-  async handleApi(data: SerialPortApi): Promise<any> {
-    switch (data.method) {
-      case 'open':
-        return this.open(data.options)
-      case 'close':
-        return this.close(data.id)
-      case 'write':
-        return this.write(data.id, data.data)
-      case 'list':
-        return this.list()
-      case 'setSignals':
-        return this.setSignals(data.id, data.signals)
-      case 'getSignals':
-        return this.getSignals(data.id)
-      default:
-        throw new Error(`Unknown serialPortApi method: ${(data as any).method}`)
-    }
-  }
-
-  /**
-   * Open a serial port with the given options
-   */
-  async open(options: SerialPortOptions): Promise<void> {
-    const id = options.path
-    if (this.ports.has(id)) {
-      throw new Error(`SerialPort with id '${id}' already exists`)
-    }
-
-    return new Promise((resolve, reject) => {
-      const port = new SerialPort(
-        {
-          path: options.path,
-          baudRate: options.baudRate,
-          dataBits: options.dataBits ?? 8,
-          stopBits: options.stopBits ?? 1,
-          parity: options.parity ?? 'none',
-          rtscts: options.rtscts ?? false,
-          xon: options.xon ?? false,
-          xoff: options.xoff ?? false,
-          autoOpen: false
-        } as SerialPortOpenOptions<AutoDetectTypes>,
-        (err) => {
-          if (err) {
-            reject(err)
-          }
-        }
-      )
-
-      port.on('data', (data: Buffer) => {
-        this.onData(id, data)
-      })
-
-      port.on('error', (err) => {
-        this.onError(id, err)
-      })
-
-      port.on('close', () => {
-        this.onClose(id)
-      })
-
-      port.open((err) => {
-        if (err) {
-          reject(err)
-        } else {
-          this.ports.set(id, port)
-          resolve()
-        }
-      })
-    })
-  }
-
-  /**
-   * Close a serial port
-   */
-  async close(id: string): Promise<void> {
-    const port = this.ports.get(id)
-    if (!port) {
-      throw new Error(`SerialPort with id '${id}' not found`)
-    }
-
-    return new Promise((resolve, reject) => {
-      port.close((err) => {
-        if (err) {
-          reject(err)
-        } else {
-          this.ports.delete(id)
-          resolve()
-        }
-      })
-    })
-  }
-
-  /**
-   * Write data to a serial port
-   */
-  async write(id: string, data: number[] | Buffer): Promise<void> {
-    const port = this.ports.get(id)
-    if (!port) {
-      throw new Error(`SerialPort with id '${id}' not found`)
-    }
-
-    const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
-
-    return new Promise((resolve, reject) => {
-      port.write(buffer, (err) => {
-        if (err) {
-          reject(err)
-        } else {
-          port.drain((drainErr) => {
-            if (drainErr) {
-              reject(drainErr)
-            } else {
-              resolve()
-            }
-          })
-        }
-      })
-    })
-  }
-
-  /**
-   * List available serial ports
-   */
-  async list(): Promise<any[]> {
-    return SerialPort.list()
-  }
-
-  /**
-   * Set control signals (DTR, RTS, BRK)
-   */
-  async setSignals(
-    id: string,
-    signals: { brk?: boolean; dtr?: boolean; rts?: boolean }
-  ): Promise<void> {
-    const port = this.ports.get(id)
-    if (!port) {
-      throw new Error(`SerialPort with id '${id}' not found`)
-    }
-
-    return new Promise((resolve, reject) => {
-      port.set(signals, (err) => {
-        if (err) {
-          reject(err)
-        } else {
-          resolve()
-        }
-      })
-    })
-  }
-
-  /**
-   * Get control signals (CTS, DSR, DCD)
-   */
-  async getSignals(id: string): Promise<{ cts: boolean; dsr: boolean; dcd: boolean }> {
-    const port = this.ports.get(id)
-    if (!port) {
-      throw new Error(`SerialPort with id '${id}' not found`)
-    }
-
-    return new Promise((resolve, reject) => {
-      port.get((err, status) => {
-        if (err) {
-          reject(err)
-        } else {
-          resolve(status as { cts: boolean; dsr: boolean; dcd: boolean })
-        }
-      })
-    })
-  }
-
-  /**
-   * Called when data is received from serial port
-   * Sends data to worker via workerEmitNoWait (fire-and-forget)
-   */
-  private onData(id: string, data: Buffer) {
-    if (!this.tester.selfStop) {
-      this.tester.workerEmitNoWait('__serialPortData', {
-        id,
-        data: Array.from(data)
-      })
-    }
-  }
-
-  /**
-   * Called when an error occurs on the serial port
-   */
-  private onError(id: string, err: Error) {
-    if (!this.tester.selfStop) {
-      this.tester.workerEmitNoWait('__serialPortError', {
-        id,
-        error: err.message
-      })
-    }
-  }
-
-  /**
-   * Called when the serial port is closed
-   */
-  private onClose(id: string) {
-    this.ports.delete(id)
-    if (!this.tester.selfStop) {
-      this.tester.workerEmitNoWait('__serialPortClose', {
-        id
-      })
-    }
-  }
-
-  /**
-   * Close all open serial ports
-   */
-  async closeAll(): Promise<void> {
-    const closePromises: Promise<void>[] = []
-    for (const [id, port] of this.ports) {
-      closePromises.push(
-        new Promise((resolve) => {
-          port.close(() => {
-            this.ports.delete(id)
-            resolve()
-          })
-        })
-      )
-    }
-    await Promise.all(closePromises)
-  }
-
-  /**
-   * Check if a port with the given id exists
-   */
-  hasPort(id: string): boolean {
-    return this.ports.has(id)
-  }
-
-  /**
-   * Get the number of open ports
-   */
-  getPortCount(): number {
-    return this.ports.size
   }
 }

@@ -5,6 +5,7 @@ import { CAN_ID_TYPE, CanMessage, getTsUs } from '../share/can'
 import { ReplayLOG } from '../log'
 import type { ReplayItem, ReplayFileFormat, ReplayChannelMap } from 'src/preload/data'
 import { AscReader } from './ascReader'
+import { BlfReader } from './blfReader'
 import { DOIP } from '../doip'
 import { CanBase } from '../docan/base'
 import LinBase from '../dolin/base'
@@ -79,6 +80,8 @@ export interface ReplayReader {
   /** Resume the reader */
   resume(): void
   close(): void
+  /** Measurement start time in ms since epoch (UTC), if available from file header */
+  measurementStartTimeMs?: number
 }
 
 /**
@@ -101,6 +104,7 @@ export class Replay {
   private lastProgressPercent: number | null = null
   private channelIdMap: Map<number, ReplayChannelMap> = new Map()
   private tsOffset: number = 0
+  private measurementStartTimeMs: number = 0
   /** Cache: `${databaseId}|${frameId}|${idType}` -> { database, name } or null (not found) */
   private frameDbInfoCache: Map<string, { database: string; name: string } | null> = new Map()
   constructor(
@@ -125,6 +129,8 @@ export class Replay {
     switch (this.config.format) {
       case 'asc':
         return new AscReader(this.config.filePath, this.speedFactor)
+      case 'blf':
+        return new BlfReader(this.config.filePath, this.speedFactor)
       default:
         throw new Error(`Reader not implemented for format: ${this.config.format}`)
     }
@@ -220,6 +226,10 @@ export class Replay {
   }
 
   private processReplayFrame(frame: ReplayCanFrame): void {
+    // Lazily capture measurement start time after header is parsed
+    if (this.measurementStartTimeMs === 0 && this.reader?.measurementStartTimeMs) {
+      this.measurementStartTimeMs = this.reader.measurementStartTimeMs
+    }
     if (this.reader) {
       const progress = this.reader.getProgress()
       const intPercent = Math.floor(progress.percent)
@@ -241,6 +251,19 @@ export class Replay {
             }
           }
           if (this.config.mode == 'offline') {
+            // Attach original recording time (enabled by default, can be disabled via config)
+            if (this.config.useOriginalTime !== false && this.measurementStartTimeMs > 0) {
+              frame.originalTs = frame.ts
+              const d = new Date(this.measurementStartTimeMs + frame.ts / 1000)
+              const y = d.getUTCFullYear()
+              const mo = String(d.getUTCMonth() + 1).padStart(2, '0')
+              const day = String(d.getUTCDate()).padStart(2, '0')
+              const h = String(d.getUTCHours()).padStart(2, '0')
+              const mi = String(d.getUTCMinutes()).padStart(2, '0')
+              const s = String(d.getUTCSeconds()).padStart(2, '0')
+              const ms = String(d.getUTCMilliseconds()).padStart(3, '0')
+              frame.absTimeStr = `${y}-${mo}-${day} ${h}:${mi}:${s}.${ms}`
+            }
             frame.ts += this.tsOffset
             base.log.canBase(frame)
           }

@@ -41,6 +41,10 @@
       "link": "pwm/pwm.md"
     },
     {
+      "text": "Serial",
+      "link": "serial/serial.md"
+    },
+    {
       "text": "网络",
       "items": [
         {
@@ -299,8 +303,22 @@
       "text": "SOME/IP",
       "items": [
         {
-          "text": "请求/响应",
+          "text": "本地 SOME/IP 演示",
           "link": "someip/readme.md"
+        },
+        {
+          "text": "远程 SOME/IP 演示",
+          "link": "someip_remote/readme.md"
+        }
+      ],
+      "collapsed": true
+    },
+    {
+      "text": "CANOpen",
+      "items": [
+        {
+          "text": "CANOpen PDO",
+          "link": "canopen_pdo/readme.md"
         }
       ],
       "collapsed": true

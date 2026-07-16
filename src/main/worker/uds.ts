@@ -1,5 +1,23 @@
 /**
+ * **UDS / diagnostics worker runtime** — largest module in the worker bundle.
+ *
+ * @remarks
+ * ### Responsibilities
+ * - Registers the worker RPC surface (`registerWorker`, `__on`, `__start`, …) so the parent `Worker` can call script code.
+ * - Exposes {@link UtilClass} as the global {@link Util} singleton for hooks, timers, CAN/LIN/SOME/IP **listeners**, and variables.
+ * - Provides `output` / `setSignal` / `setVar` helpers that marshal requests to the main process via {@link workerEmit}
+ *   and correlate replies through an internal `emitMap` keyed by {@link global.cmdId | global.cmdId}.
+ *
+ * ### Threading
+ * This file is executed inside a **worker thread**. APIs that touch hardware or native modules must go through
+ * `workerEmit` / {@link emitWorkerEventWithReply}; never assume Node native addons are loadable here unless documented.
+ *
+ * ### See also
+ * - Node.js `worker_threads` documentation: `https://nodejs.org/api/worker_threads.html`
+ * - `src/main/workerClient.ts` — parent-side counterpart.
+ *
  * @module Util
+ * @category Util
  */
 import Emittery from 'emittery'
 import {
@@ -49,7 +67,25 @@ if (!isMainThread && parentPort) {
       } catch (e: any) {
         // id === -1 means fire-and-forget, no error response needed
         if (id !== -1) {
-          parentPort?.postMessage({ type: 'rpc_response', id, error: e })
+          const normalizedError =
+            e instanceof Error
+              ? { message: e.message || 'Unknown error', stack: e.stack || '' }
+              : {
+                  message:
+                    typeof e === 'string'
+                      ? e
+                      : e == null
+                        ? 'Unknown error'
+                        : (() => {
+                            try {
+                              return JSON.stringify(e)
+                            } catch {
+                              return String(e)
+                            }
+                          })(),
+                  stack: ''
+                }
+          parentPort?.postMessage({ type: 'rpc_response', id, error: normalizedError })
         }
       }
     }
@@ -58,10 +94,34 @@ if (!isMainThread && parentPort) {
   exposedMethods['methods'] = () => Object.keys(exposedMethods)
 }
 
+/**
+ * Register additional RPC callables on the worker `parentPort` message bus.
+ *
+ * @param methods - Map of method name → function. Names must be unique; later registrations overwrite earlier ones
+ *   for the same key (same behavior as `Object.assign` on the internal `exposedMethods` table).
+ *
+ * @remarks
+ * Built-ins such as `methods`, `__on`, `__start`, and `__eventDone` are registered by {@link UtilClass} construction.
+ * Third-party extensions (e.g. `setTxPending`) should use descriptive `__`-prefixed names to avoid collisions.
+ *
+ * @category Worker infrastructure
+ */
 export function registerWorker(methods: Record<string, Function>) {
   Object.assign(exposedMethods, methods)
 }
 
+/**
+ * Emit an **event** (not an RPC return) to the parent thread.
+ *
+ * @param payload - Arbitrary JSON-cloneable data; shallow-cloned with `lodash/cloneDeep` before `postMessage`.
+ *   Common shape: `{ id, event, data }` where `event` selects a handler on `UdsTester.eventHandlerMap`.
+ *
+ * @remarks
+ * No promise is returned — the parent must acknowledge async work through a follow-up RPC such as `__eventDone`
+ * when the payload includes a correlation `id` managed by `emitMap`.
+ *
+ * @category Worker infrastructure
+ */
 export function workerEmit(payload: any) {
   if (!isMainThread && parentPort) {
     parentPort.postMessage({ type: 'event', payload: cloneDeep(payload) })
@@ -72,6 +132,8 @@ import { cloneDeep } from 'lodash'
 import { v4 } from 'uuid'
 import { checkServiceId, ServiceId } from './../share/uds'
 import { CAN_ID_TYPE, CanMessage, Signal as CanSignal } from '../share/can'
+import { SerialMessage } from '../share/serial'
+export type { SerialMessage } from '../share/serial'
 
 // import SecureAccessDll from './secureAccess'
 import { EntityAddr, VinInfo } from '../share/doip'
@@ -240,19 +302,30 @@ export function test(name: string, fn: () => void | Promise<void>) {
       init = true
     }
 
-    t.before(async () => {
-      if (testEnableControl[testCnt] != true) {
-        t.skip()
-        return
+    const currentTestCnt = testCnt
+    const enabled = testEnableControl[currentTestCnt] == true
+    let advanced = false
+    const advanceTestCnt = () => {
+      if (!advanced) {
+        testCnt = Math.max(testCnt, currentTestCnt + 1)
+        advanced = true
       }
-      console.log(`<<< TEST START ${name}>>>`)
+    }
+
+    t.before(async () => {
+      if (enabled) {
+        console.log(`<<< TEST START ${name}>>>`)
+      }
     })
     t.after(() => {
-      console.log(`<<< TEST END ${name}>>>`)
-      testCnt++
+      if (enabled) {
+        console.log(`<<< TEST END ${name}>>>`)
+      }
+      advanceTestCnt()
     })
 
-    if (testEnableControl[testCnt] != true) {
+    if (!enabled) {
+      advanceTestCnt()
       t.skip()
     } else {
       return preserveErrorStack(fn)
@@ -262,13 +335,23 @@ export function test(name: string, fn: () => void | Promise<void>) {
 
 test.skip = function (name: string, fn: () => void | Promise<void>) {
   selfTest(name, (t) => {
+    const currentTestCnt = testCnt
+    let advanced = false
+    const advanceTestCnt = () => {
+      if (!advanced) {
+        testCnt = Math.max(testCnt, currentTestCnt + 1)
+        advanced = true
+      }
+    }
+
     t.before(() => {
       console.log(`<<< TEST START ${name}>>>`)
     })
     t.after(() => {
       console.log(`<<< TEST END ${name}>>>`)
-      testCnt++
+      advanceTestCnt()
     })
+    advanceTestCnt()
     t.skip()
   })
 }
@@ -466,9 +549,14 @@ import {
   writeMessageData
 } from 'src/renderer/src/database/dbc/calc'
 
-import { SomeipMessageBase, SomeipMessageRequest, SomeipMessageResponse } from './someip'
+import {
+  SomeipMessageBase,
+  SomeipMessageEvent,
+  SomeipMessageRequest,
+  SomeipMessageResponse
+} from './someip'
 
-import { SomeipMessage, SomeipMessageType } from '../share/someip'
+import { SomeipMessage, SomeipMessageType, VsomeipAvailabilityInfo } from '../share/someip'
 import { getAllSysVar } from '../share/sysVar'
 
 const selfDescribe = process.env.ONLY == 'true' ? nodeDescribe.only : nodeDescribe
@@ -528,10 +616,6 @@ const selfTest = process.env.ONLY == 'true' ? nodeTest.only : nodeTest
  */
 export function describe(name: string, fn: () => void | Promise<void>) {
   selfDescribe(name, async (t) => {
-    before(() => {
-      testCnt++
-    })
-
     return preserveErrorStack(fn)
   })
 }
@@ -610,6 +694,33 @@ const emitMap = new Map<number, { resolve: any; reject: any }>()
 const serviceMap = new Map<string, ServiceItem>()
 
 global.cmdId = 0
+
+/**
+ * Emit a worker **event** that expects a single correlated completion from the main process.
+ *
+ * @param event - Handler key on the parent `UdsTester` (e.g. `'someipApi'`, `'serialApi'`, `'output'`).
+ * @param data - Inner payload forwarded to that handler (the worker automatically assigns `payload.id` from
+ *   `global.cmdId` before incrementing it).
+ *
+ * @returns Promise settled when the parent calls `__eventDone` with the same `id`, or rejected if the parent reports `err`.
+ *
+ * @remarks
+ * Typical pattern:
+ * ```ts
+ * emitWorkerEventWithReply('someipApi', { op: 'request', msg: { ... } })
+ * ```
+ * Submodule `someip.ts` uses a **lazy** `require('./uds')` + this helper to avoid circular static imports while still
+ * participating in the same `emitMap` lifecycle as {@link output}.
+ *
+ * @category Worker infrastructure
+ */
+export function emitWorkerEventWithReply(event: string, data: any): Promise<any> {
+  return new Promise((resolve, reject) => {
+    workerEmit({ id: global.cmdId, event, data })
+    emitMap.set(global.cmdId, { resolve, reject })
+    global.cmdId++
+  })
+}
 
 /**
  * @category UDS
@@ -1355,7 +1466,7 @@ function createCanMessageWrapper(msg: CanMessage) {
     }
   })
 }
-function createLinMessageWrapper(msg: LinMsg) {
+function createLinMessageWrapper(msg: LinMsg): LinMsg {
   // Cache database and message definition to avoid repeated lookups
   const db = msg.database ? global.dataSet.database.lin[msg.database] : undefined
   const msgDef = msg.name ? db?.frames[msg.name] : undefined
@@ -1363,15 +1474,16 @@ function createLinMessageWrapper(msg: LinMsg) {
   if (db && msgDef) {
     writeLinMessageData(msgDef, msg.data, db)
     msg.signals = {}
-    for (const signal of Object.values(msgDef.signals)) {
-      msg.signals[signal.name] = new Proxy(signal, {
-        set(target, prop: keyof CanSignal, value: any) {
+    for (const xsignal of Object.values(msgDef.signals)) {
+      const signal = db.signals[xsignal.name]
+      msg.signals[signal.signalName] = new Proxy(signal, {
+        set(target, prop: keyof LinSignal, value: any) {
           const ret = Reflect.set(target, prop, value)
           if (prop === 'value') {
-            updateLinSignalVal(db, signal.name, value)
+            updateLinSignalVal(db, signal.signalName, value)
           }
           if (prop === 'physValue') {
-            updateLinSignalVal(db, signal.name, String(value))
+            updateLinSignalVal(db, signal.signalName, String(value))
           }
           return ret
         }
@@ -1380,13 +1492,13 @@ function createLinMessageWrapper(msg: LinMsg) {
   }
 
   return new Proxy(msg, {
-    get(target, prop: keyof CanMessage) {
+    get(target, prop: keyof LinMsg) {
       if (prop === 'data' && msgDef && db) {
         return getFrameData(db, msgDef)
       }
       return Reflect.get(target, prop)
     },
-    set(target, prop: keyof CanMessage, value: any) {
+    set(target, prop: keyof LinMsg, value: any) {
       if (prop === 'data' && db && msgDef) {
         writeLinMessageData(msgDef, value, db)
       }
@@ -1481,6 +1593,70 @@ export class UtilClass {
     } else {
       this.event.on(`can.${id}` as any, fc)
     }
+  }
+  /**
+   * Registers a listener for raw data received/sent on a serial (UART) hardware device.
+   *
+   * The configured serial device opens automatically when the project starts.
+   * The callback fires for both received (`dir: 'IN'`) and sent (`dir: 'OUT'`)
+   * frames; filter on `msg.dir` if you only want one direction.
+   *
+   * @category Serial
+   * @param device - The serial device name to listen on, or `true` for all serial devices
+   * @param fc - Callback invoked with each {@link SerialMessage}
+   *
+   * @example
+   * ```ts
+   * // Listen to all serial devices
+   * Util.OnSerial(true, (msg) => {
+   *   if (msg.dir === 'IN') console.log('rx:', msg.data.toString('hex'))
+   * })
+   *
+   * // Listen to a specific device by name
+   * Util.OnSerial('Serial_1', (msg) => {
+   *   console.log(msg.dir, msg.data)
+   * })
+   * ```
+   */
+  OnSerial(device: string | true, fc: (msg: SerialMessage) => void | Promise<void>) {
+    if (device === true) {
+      this.event.on('serial' as any, fc)
+    } else {
+      this.event.on(`serial.${device}` as any, fc)
+    }
+  }
+  /**
+   * Writes raw bytes to a serial (UART) hardware device.
+   *
+   * The device must be configured in the project and bound to this node's
+   * channel. The written bytes are shown in the trace window.
+   *
+   * @category Serial
+   * @param device - The serial device name, or `undefined` to use the node's first serial channel
+   * @param data - Bytes to write
+   * @returns Promise resolving to the sent timestamp (microseconds)
+   *
+   * @example
+   * ```ts
+   * await Util.writeSerial('Serial_1', Buffer.from([0x01, 0x02, 0x03]))
+   * await Util.writeSerial(undefined, [0x55, 0xaa])
+   * ```
+   */
+  async writeSerial(device: string | undefined, data: Buffer | number[]): Promise<number> {
+    const p: Promise<number> = new Promise((resolve, reject) => {
+      workerEmit({
+        id: global.cmdId,
+        event: 'serialApi',
+        data: {
+          method: 'write',
+          device,
+          data: Buffer.isBuffer(data) ? Array.from(data) : data
+        }
+      })
+      emitMap.set(global.cmdId, { resolve, reject })
+      global.cmdId++
+    })
+    return await p
   }
   /**
    * Registers an event listener for signal updates from CAN/LIN databases.
@@ -1673,12 +1849,63 @@ export class UtilClass {
    */
   OnSomeipMessage(
     id: string | true,
-    fc: (msg: SomeipMessageRequest | SomeipMessageResponse) => void | Promise<void>
+    fc: (
+      msg: SomeipMessageRequest | SomeipMessageResponse | SomeipMessageEvent | SomeipMessageBase
+    ) => void | Promise<void>
   ) {
     if (id === true) {
       this.event.on('someip' as any, fc)
     } else {
       this.event.on(`someip.${id}` as any, fc)
+    }
+  }
+
+  /**
+   * Registers an event listener for SOME/IP service availability changes.
+   *
+   * @param id - The SOME/IP service identifier in format "service.instance", or wildcard patterns:
+   * - `"service.*"`: all instances under one service
+   * - `"*.*"`: all services and instances
+   * If `true`, listens for all availability changes.
+   * @param fc - The callback function invoked when SOME/IP service availability changes.
+   *
+   * @example
+   * ```ts
+   * // 1) Listen all changes
+   * Util.OnSomeipServiceValid(true, (info) => {
+   *   console.log(
+   *     `[ALL] ${info.service.toString(16)}.${info.instance.toString(16)} => ${info.available}`
+   *   )
+   * })
+   *
+   * // 2) Listen one service, any instance
+   * Util.OnSomeipServiceValid('1234.*', (info) => {
+   *   console.log(`[SVC 1234] instance=${info.instance.toString(16)} available=${info.available}`)
+   * })
+   *
+   * // 3) Listen exact service+instance
+   * Util.OnSomeipServiceValid('1234.0001', (info) => {
+   *   if (info.available) {
+   *     console.log('target service is online')
+   *   } else {
+   *     console.log('target service is offline')
+   *   }
+   * })
+   *
+   * // 4) Same as true, wildcard style
+   * Util.OnSomeipServiceValid('*.*', (info) => {
+   *   console.log('wildcard', info)
+   * })
+   * ```
+   */
+  OnSomeipServiceValid(
+    id: string | true,
+    fc: (info: VsomeipAvailabilityInfo) => void | Promise<void>
+  ) {
+    if (id === true) {
+      this.event.on('someipServiceValid' as any, fc)
+    } else {
+      this.event.on(`someipServiceValid.${id}` as any, fc)
     }
   }
 
@@ -1701,7 +1928,9 @@ export class UtilClass {
    */
   OffSomeipMessage(
     id: string | true,
-    fc: (msg: SomeipMessageRequest | SomeipMessageResponse) => void | Promise<void>
+    fc: (
+      msg: SomeipMessageRequest | SomeipMessageResponse | SomeipMessageEvent | SomeipMessageBase
+    ) => void | Promise<void>
   ) {
     if (id === true) {
       this.event.off('someip' as any, fc)
@@ -1732,12 +1961,48 @@ export class UtilClass {
    */
   OnSomeipMessageOnce(
     id: string | true,
-    fc: (msg: SomeipMessageRequest | SomeipMessageResponse) => void | Promise<void>
+    fc: (
+      msg: SomeipMessageRequest | SomeipMessageResponse | SomeipMessageEvent | SomeipMessageBase
+    ) => void | Promise<void>
   ) {
     if (id === true) {
       this.event.once('someip' as any).then(fc)
     } else {
       this.event.once(`someip.${id}` as any).then(fc)
+    }
+  }
+  /**
+   * Registers a one-time event listener for SOME/IP service availability changes.
+   *
+   * @param id - The SOME/IP service identifier in format "service.instance", or wildcard patterns (`"service.*"`, `"*.*"`).
+   * If `true`, listens for all availability changes.
+   * @param fc - The callback function to be invoked once when availability changes.
+   */
+  OnSomeipServiceValidOnce(
+    id: string | true,
+    fc: (info: VsomeipAvailabilityInfo) => void | Promise<void>
+  ) {
+    if (id === true) {
+      this.event.once('someipServiceValid' as any).then(fc)
+    } else {
+      this.event.once(`someipServiceValid.${id}` as any).then(fc)
+    }
+  }
+  /**
+   * Unsubscribes from SOME/IP service availability changes.
+   *
+   * @param id - The SOME/IP service identifier in format "service.instance", or wildcard patterns (`"service.*"`, `"*.*"`).
+   * If `true`, unsubscribes from all availability changes.
+   * @param fc - The callback function to remove from listeners.
+   */
+  OffSomeipServiceValid(
+    id: string | true,
+    fc: (info: VsomeipAvailabilityInfo) => void | Promise<void>
+  ) {
+    if (id === true) {
+      this.event.off('someipServiceValid' as any, fc)
+    } else {
+      this.event.off(`someipServiceValid.${id}` as any, fc)
     }
   }
   /**
@@ -2048,6 +2313,9 @@ export class UtilClass {
 
     if (msg.signals) {
       const dbName = global.dataSet.database.lin[msg.database!].name
+      if (dbName && msg.name) {
+        await this.event.emit(`lin.${dbName}.${msg.name}` as any, msg)
+      }
       //emit signal
       for (const signal of Object.values(msg.signals as Record<string, LinSignal>)) {
         await this.event.emit(`${dbName}.${signal.signalName}` as any, signal)
@@ -2057,31 +2325,62 @@ export class UtilClass {
     await this.event.emit(`lin.${msg.frameId}` as any, msg)
     await this.event.emit('lin' as any, msg)
   }
+  private async serialMsg(msg: SerialMessage) {
+    msg.data = Buffer.from(msg.data)
+    await this.event.emit(`serial.${msg.name}` as any, msg)
+    await this.event.emit('serial' as any, msg)
+  }
   private async someipMsg(data: SomeipMessage) {
     let someipMsg: SomeipMessageBase
-    if (data.messageType == SomeipMessageType.REQUEST) {
+    if (
+      data.messageType == SomeipMessageType.REQUEST ||
+      data.messageType == SomeipMessageType.REQUEST_NO_RETURN
+    ) {
       someipMsg = new SomeipMessageRequest(data)
     } else if (data.messageType == SomeipMessageType.RESPONSE) {
       someipMsg = new SomeipMessageResponse(data)
+    } else if (
+      data.messageType == SomeipMessageType.NOTIFICATION ||
+      data.messageType == SomeipMessageType.NOTIFICATION_ACK
+    ) {
+      someipMsg = new SomeipMessageEvent(data)
     } else {
-      throw new Error(`someip message type not supported: ${data.messageType}`)
+      someipMsg = new SomeipMessageBase(data)
     }
 
     const msg = someipMsg.msg
     msg.payload = Buffer.from(msg.payload)
-    await this.event.emit(
-      `someip.${msg.service.toString(16).padStart(4, '0')}.*.*` as any,
-      someipMsg
-    )
-    await this.event.emit(
-      `someip.${msg.service.toString(16).padStart(4, '0')}.${msg.instance.toString(16).padStart(4, '0')}.*` as any,
-      someipMsg
-    )
-    await this.event.emit(
-      `someip.${msg.service.toString(16).padStart(4, '0')}.${msg.instance.toString(16).padStart(4, '0')}.${msg.method.toString(16).padStart(4, '0')}` as any,
-      someipMsg
-    )
-    await this.event.emit('someip' as any, someipMsg)
+    const events = [
+      `someip.${msg.service.toString(16).padStart(4, '0')}.*.*`,
+      `someip.${msg.service.toString(16).padStart(4, '0')}.${msg.instance.toString(16).padStart(4, '0')}.*`,
+      `someip.${msg.service.toString(16).padStart(4, '0')}.${msg.instance.toString(16).padStart(4, '0')}.${msg.method.toString(16).padStart(4, '0')}`,
+      'someip'
+    ]
+    for (const eventName of events) {
+      try {
+        await this.event.emit(eventName as any, someipMsg)
+      } catch (e: any) {
+        // Plugin/user listener errors should not crash the worker loop.
+        console.error(`someip listener error on ${eventName}: ${e?.message || e}`)
+      }
+    }
+  }
+  private async someipServiceValid(info: VsomeipAvailabilityInfo) {
+    const serviceHex = info.service.toString(16).padStart(4, '0')
+    const instanceHex = info.instance.toString(16).padStart(4, '0')
+    const events = [
+      `someipServiceValid.${serviceHex}.${instanceHex}`,
+      `someipServiceValid.${serviceHex}.*`,
+      'someipServiceValid.*.*',
+      'someipServiceValid'
+    ]
+    for (const eventName of events) {
+      try {
+        await this.event.emit(eventName as any, info)
+      } catch (e: any) {
+        console.error(`someip service valid listener error on ${eventName}: ${e?.message || e}`)
+      }
+    }
   }
   private async keyDown(key: string) {
     await this.event.emit(`keyDown${key}` as any, key)
@@ -2132,39 +2431,12 @@ export class UtilClass {
       })
       this.event.on('__canMsg' as any, this.canMsg.bind(this))
       this.event.on('__linMsg' as any, this.linMsg.bind(this))
+      this.event.on('__serialMsg' as any, this.serialMsg.bind(this))
       this.event.on('__someipMsg' as any, this.someipMsg.bind(this))
+      this.event.on('__someipServiceValid' as any, this.someipServiceValid.bind(this))
       this.event.on('__keyDown' as any, this.keyDown.bind(this))
       this.event.on('__varUpdate' as any, this.varUpdate.bind(this))
-      // SerialPort event handlers
-      this.event.on('__serialPortData' as any, this.handleSerialPortData.bind(this))
-      this.event.on('__serialPortError' as any, this.handleSerialPortError.bind(this))
-      this.event.on('__serialPortClose' as any, this.handleSerialPortClose.bind(this))
     }
-  }
-
-  /** @internal */
-  private handleSerialPortData(event: SerialPortDataEvent) {
-    const port = serialPortInstances.get(event.id)
-    if (port) {
-      port.emit('data', Buffer.from(event.data))
-    }
-  }
-
-  /** @internal */
-  private handleSerialPortError(event: SerialPortErrorEvent) {
-    const port = serialPortInstances.get(event.id)
-    if (port) {
-      port.emit('error', new Error(event.error))
-    }
-  }
-
-  /** @internal */
-  private handleSerialPortClose(event: SerialPortCloseEvent) {
-    const port = serialPortInstances.get(event.id)
-    if (port) {
-      port.emit('close')
-    }
-    serialPortInstances.delete(event.id)
   }
 
   /**
@@ -2385,8 +2657,6 @@ export async function output(msg: CanMessage | LinMsg | SomeipMessageBase): Prom
   })
   return await p
 }
-
-export { SomeipMessageRequest, SomeipMessageResponse }
 
 /**
  * Set a signal value
@@ -2954,392 +3224,6 @@ export async function setPwmDuty(value: { duty: number; device?: string }) {
     global.cmdId++
   })
   return await p
-}
-
-// ============================================================================
-// SerialPort API
-// ============================================================================
-
-/**
- * Serial port configuration options
- *
- * @category SerialPort
- */
-export interface SerialPortOptions {
-  /** Serial port path (e.g., 'COM3' on Windows, '/dev/ttyUSB0' on Linux) */
-  path: string
-  /** Baud rate (e.g., 9600, 115200) */
-  baudRate: number
-  /** Data bits: 5, 6, 7, or 8 (default: 8) */
-  dataBits?: 5 | 6 | 7 | 8
-  /** Stop bits: 1, 1.5, or 2 (default: 1) */
-  stopBits?: 1 | 1.5 | 2
-  /** Parity: 'none', 'even', 'odd', 'mark', or 'space' (default: 'none') */
-  parity?: 'none' | 'even' | 'odd' | 'mark' | 'space'
-  /** Enable RTS/CTS hardware flow control (default: false) */
-  rtscts?: boolean
-  /** Enable XON software flow control (default: false) */
-  xon?: boolean
-  /** Enable XOFF software flow control (default: false) */
-  xoff?: boolean
-}
-
-/**
- * Serial port information returned by list()
- *
- * @category SerialPort
- */
-export interface SerialPortInfo {
-  /** Port path (e.g., 'COM3', '/dev/ttyUSB0') */
-  path: string
-  /** Manufacturer name */
-  manufacturer?: string
-  /** Serial number */
-  serialNumber?: string
-  /** PNP ID (Windows) */
-  pnpId?: string
-  /** Location ID */
-  locationId?: string
-  /** Friendly name */
-  friendlyName?: string
-  /** Vendor ID */
-  vendorId?: string
-  /** Product ID */
-  productId?: string
-}
-
-/**
- * Serial port control signals for setting
- *
- * @category SerialPort
- */
-export interface SerialPortSetSignals {
-  /** Break signal */
-  brk?: boolean
-  /** Data Terminal Ready signal */
-  dtr?: boolean
-  /** Request To Send signal */
-  rts?: boolean
-}
-
-/**
- * Serial port control signals status
- *
- * @category SerialPort
- */
-export interface SerialPortSignals {
-  /** Clear To Send signal */
-  cts: boolean
-  /** Data Set Ready signal */
-  dsr: boolean
-  /** Data Carrier Detect signal */
-  dcd: boolean
-}
-
-/**
- * Serial port data event payload
- *
- * @category SerialPort
- */
-export interface SerialPortDataEvent {
-  /** Serial port ID */
-  id: string
-  /** Received data as number array */
-  data: number[]
-}
-
-/**
- * Serial port error event payload
- *
- * @category SerialPort
- */
-export interface SerialPortErrorEvent {
-  /** Serial port ID */
-  id: string
-  /** Error message */
-  error: string
-}
-
-/**
- * Serial port close event payload
- *
- * @category SerialPort
- */
-export interface SerialPortCloseEvent {
-  /** Serial port ID */
-  id: string
-}
-
-// Store SerialPortClient instances for event dispatching
-const serialPortInstances = new Map<string, SerialPortClient>()
-
-/**
- * SerialPort client class for serial communication in worker scripts.
- * Provides methods to open, close, read, and write serial ports.
- * Supports multiple simultaneous serial port connections.
- * The port ID is automatically set to the path.
- * Extends Emittery for event-based data handling.
- *
- * @category SerialPort
- *
- * @example
- * ```ts
- * import { SerialPortClient } from 'ECB';
- *
- * // Create a serial port instance with configuration
- * const port = new SerialPortClient({
- *   path: 'COM3',
- *   baudRate: 115200
- * });
- *
- * // Open the port
- * await port.open();
- *
- * console.log(port.id); // 'COM3'
- *
- * // Handle incoming data using on('data')
- * port.on('data', (data) => {
- *   console.log('Received:', data.toString('hex'));
- * });
- *
- * // Handle errors
- * port.on('error', (err) => {
- *   console.error('Error:', err.message);
- * });
- *
- * // Handle close event
- * port.on('close', () => {
- *   console.log('Port closed');
- * });
- *
- * // Write data
- * await port.write(Buffer.from([0x01, 0x02, 0x03]));
- *
- * // Close when done
- * await port.close();
- * ```
- */
-export class SerialPortClient extends Emittery<{
-  data: Buffer
-  error: Error
-  close: undefined
-}> {
-  private _id: string
-  private _options: SerialPortOptions
-  private _isOpen: boolean = false
-
-  /**
-   * Creates a new SerialPortClient instance
-   *
-   * @param options - Serial port configuration options
-   *
-   * @example
-   * ```ts
-   * const port = new SerialPortClient({
-   *   path: 'COM3',
-   *   baudRate: 115200
-   * });
-   * ```
-   */
-  constructor(options: SerialPortOptions) {
-    super()
-    this._options = options
-    this._id = options.path
-  }
-
-  /**
-   * Get the unique identifier of this serial port instance (equals to path)
-   *
-   * @returns The serial port ID (path)
-   *
-   * @example
-   * ```ts
-   * const port = new SerialPortClient({ path: 'COM3', baudRate: 115200 });
-   * console.log(port.id); // 'COM3'
-   * ```
-   */
-  get id(): string {
-    return this._id
-  }
-
-  /**
-   * Check if the serial port is currently open
-   *
-   * @returns True if the port is open, false otherwise
-   *
-   * @example
-   * ```ts
-   * const port = new SerialPortClient({ path: 'COM3', baudRate: 115200 });
-   * console.log(port.isOpen); // false
-   * await port.open();
-   * console.log(port.isOpen); // true
-   * ```
-   */
-  get isOpen(): boolean {
-    return this._isOpen
-  }
-
-  /**
-   * Open the serial port
-   *
-   * @returns Promise that resolves when the port is opened
-   * @throws Error if the port is already open or if opening fails
-   *
-   * @example
-   * ```ts
-   * // Basic usage
-   * const port = new SerialPortClient({
-   *   path: 'COM3',
-   *   baudRate: 115200
-   * });
-   * await port.open();
-   *
-   * // Full configuration
-   * const port2 = new SerialPortClient({
-   *   path: '/dev/ttyUSB0',
-   *   baudRate: 9600,
-   *   dataBits: 8,
-   *   stopBits: 1,
-   *   parity: 'none',
-   *   rtscts: false,
-   *   xon: false,
-   *   xoff: false
-   * });
-   * await port2.open();
-   * ```
-   */
-  async open(): Promise<void> {
-    if (this._isOpen) {
-      throw new Error(`SerialPort '${this._id}' is already open`)
-    }
-
-    const p: Promise<void> = new Promise((resolve, reject) => {
-      workerEmit({
-        id: global.cmdId,
-        event: 'serialPortApi',
-        data: {
-          method: 'open',
-          options: this._options
-        }
-      })
-      emitMap.set(global.cmdId, { resolve, reject })
-      global.cmdId++
-    })
-
-    await p
-    this._isOpen = true
-    serialPortInstances.set(this._id, this)
-  }
-
-  /**
-   * Close the serial port
-   *
-   * @returns Promise that resolves when the port is closed
-   * @throws Error if the port is not open
-   *
-   * @example
-   * ```ts
-   * const port = new SerialPortClient({ path: 'COM3', baudRate: 115200 });
-   * await port.open();
-   * // ... do some work ...
-   * await port.close();
-   * ```
-   */
-  async close(): Promise<void> {
-    if (!this._isOpen) {
-      throw new Error(`SerialPort '${this._id}' is not open`)
-    }
-
-    const p: Promise<void> = new Promise((resolve, reject) => {
-      workerEmit({
-        id: global.cmdId,
-        event: 'serialPortApi',
-        data: {
-          method: 'close',
-          id: this._id
-        }
-      })
-      emitMap.set(global.cmdId, { resolve, reject })
-      global.cmdId++
-    })
-
-    await p
-    this._isOpen = false
-    serialPortInstances.delete(this._id)
-  }
-
-  /**
-   * Write data to the serial port
-   *
-   * @param data - Data to write (Buffer or array of bytes)
-   * @returns Promise that resolves when data is written and drained
-   * @throws Error if the port is not open
-   *
-   * @example
-   * ```ts
-   * const port = new SerialPortClient({ path: 'COM3', baudRate: 115200 });
-   * await port.open();
-   *
-   * // Write using Buffer
-   * await port.write(Buffer.from('Hello'));
-   *
-   * // Write using byte array
-   * await port.write([0x01, 0x02, 0x03, 0x04]);
-   *
-   * // Write hex string as buffer
-   * await port.write(Buffer.from('48454C4C4F', 'hex'));
-   * ```
-   */
-  async write(data: Buffer | number[]): Promise<void> {
-    if (!this._isOpen) {
-      throw new Error(`SerialPort '${this._id}' is not open`)
-    }
-
-    const p: Promise<void> = new Promise((resolve, reject) => {
-      workerEmit({
-        id: global.cmdId,
-        event: 'serialPortApi',
-        data: {
-          method: 'write',
-          id: this._id,
-          data: Buffer.isBuffer(data) ? Array.from(data) : data
-        }
-      })
-      emitMap.set(global.cmdId, { resolve, reject })
-      global.cmdId++
-    })
-
-    return await p
-  }
-
-  /**
-   * List all available serial ports on the system
-   *
-   * @returns Promise that resolves with array of port information
-   *
-   * @example
-   * ```ts
-   * const ports = await SerialPortClient.list();
-   * for (const port of ports) {
-   *   console.log(`${port.path} - ${port.friendlyName || 'Unknown'}`);
-   * }
-   * ```
-   */
-  static async list(): Promise<SerialPortInfo[]> {
-    const p: Promise<SerialPortInfo[]> = new Promise((resolve, reject) => {
-      workerEmit({
-        id: global.cmdId,
-        event: 'serialPortApi',
-        data: {
-          method: 'list'
-        }
-      })
-      emitMap.set(global.cmdId, { resolve, reject })
-      global.cmdId++
-    })
-
-    return await p
-  }
 }
 
 /**

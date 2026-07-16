@@ -7,11 +7,11 @@ import EventEmitter from 'events'
 import type { Sequence, ServiceItem } from './share/uds'
 import { PayloadType } from './doip'
 import type { LinMsg } from './share/lin'
+import type { SerialMessage } from './share/serial'
 import type { TestEvent } from 'node:test/reporters'
 import { setVar as setVarMain, setVarByKey, getVar as getVarMain } from './var'
 import { VarItem } from 'src/preload/data'
 import { v4 } from 'uuid'
-import { SomeipMessageType } from './share/someip/index'
 import type { SomeipMessage, VsomeipAvailabilityInfo } from './share/someip'
 import type { OsEvent } from './share/osEvent'
 import path from 'path'
@@ -62,6 +62,39 @@ const instanceFormat = format((info, opts: any) => {
   info.instance = opts.instance
   return info
 })
+const externalTransport: { id: string; t: () => Transport }[] = []
+const deviceTransport: { id: string; t: () => Transport }[] = []
+export function addTransport(t: () => Transport): string {
+  const id = v4()
+  externalTransport.push({ id, t })
+  return id
+}
+export function addDeviceTransport(t: () => Transport): string {
+  const id = v4()
+  deviceTransport.push({ id, t })
+  return id
+}
+
+export function removeDeviceTransport(id: string) {
+  const index = deviceTransport.findIndex((t) => t.id == id)
+  if (index != -1) {
+    deviceTransport.splice(index, 1)
+  }
+}
+export function removeTransport(id: string) {
+  const index = externalTransport.findIndex((t) => t.id == id)
+  if (index != -1) {
+    externalTransport.splice(index, 1)
+  }
+}
+
+const externalFormat: Format[] = []
+export function addFormat(f: Format) {
+  externalFormat.push(f)
+}
+export function clearFormat() {
+  externalFormat.splice(0, externalFormat.length)
+}
 
 export class CanLOG {
   vendor: string
@@ -77,8 +110,9 @@ export class CanLOG {
     this.deviceId = deviceId
     this.vendor = vendor
     const et1 = externalTransport.map((t) => t.t())
+    const dt1 = deviceTransport.map((t) => t.t())
     this.log = createLogger({
-      transports: [new Base(), ...et1],
+      transports: [new Base(), ...et1, ...dt1],
       format: format.combine(
         format.json(),
         instanceFormat({ instance: instance }),
@@ -127,29 +161,6 @@ export class CanLOG {
       }
     })
   }
-}
-
-const externalTransport: { id: string; t: () => Transport }[] = []
-
-export function addTransport(t: () => Transport): string {
-  const id = v4()
-  externalTransport.push({ id, t })
-  return id
-}
-
-export function removeTransport(id: string) {
-  const index = externalTransport.findIndex((t) => t.id == id)
-  if (index != -1) {
-    externalTransport.splice(index, 1)
-  }
-}
-
-const externalFormat: Format[] = []
-export function addFormat(f: Format) {
-  externalFormat.push(f)
-}
-export function clearFormat() {
-  externalFormat.splice(0, externalFormat.length)
 }
 
 export class UdsLOG {
@@ -301,8 +312,9 @@ export class DoipLOG {
     this.vendor = vendor
     this.deviceId = deviceId
     const et1 = externalTransport.map((t) => t.t())
+    const dt1 = deviceTransport.map((t) => t.t())
     this.log = createLogger({
-      transports: [new Base(), ...et1],
+      transports: [new Base(), ...et1, ...dt1],
       format: format.combine(
         format.json(),
         instanceFormat({ instance: instance }),
@@ -432,8 +444,9 @@ export class LinLOG {
     this.vendor = vendor
     this.deviceId = deviceId
     const et1 = externalTransport.map((t) => t.t())
+    const dt1 = deviceTransport.map((t) => t.t())
     this.log = createLogger({
-      transports: [new Base(), ...et1],
+      transports: [new Base(), ...et1, ...dt1],
       format: format.combine(
         format.json(),
         instanceFormat({ instance: instance }),
@@ -486,6 +499,64 @@ export class LinLOG {
   }
 }
 
+export class SerialLOG {
+  vendor: string
+  log: Logger
+  deviceId: string
+
+  constructor(
+    vendor: string,
+    instance: string,
+    deviceId: string,
+    private event: EventEmitter
+  ) {
+    this.vendor = vendor
+    this.deviceId = deviceId
+    const et1 = externalTransport.map((t) => t.t())
+    const dt1 = deviceTransport.map((t) => t.t())
+    this.log = createLogger({
+      transports: [new Base(), ...et1, ...dt1],
+      format: format.combine(
+        format.json(),
+        instanceFormat({ instance: instance }),
+        format.label({ label: `Serial-${vendor}` }),
+        ...externalFormat
+      )
+    })
+
+    //check device id
+    const combinedLogs = this.log.transports.filter((transport) => {
+      return (transport as any).devices && (transport as any).devices.indexOf(this.deviceId) == -1
+    })
+    for (const log of combinedLogs) {
+      this.log.remove(log)
+    }
+  }
+  close() {
+    this.log.close()
+
+    this.event.removeAllListeners()
+  }
+  serialBase(data: SerialMessage) {
+    this.log.debug({
+      method: 'serialBase',
+      data,
+      deviceId: this.deviceId
+    })
+    this.event.emit('serial-frame', data)
+  }
+  error(ts: number, msg?: string) {
+    this.log.error({
+      method: 'serialError',
+      data: {
+        ts,
+        msg
+      },
+      deviceId: this.deviceId
+    })
+  }
+}
+
 export class VarLOG {
   log: Logger
   id?: string
@@ -497,14 +568,6 @@ export class VarLOG {
       transports: [new Base(), ...et1],
       format: format.combine(format.json(), ...externalFormat)
     })
-    //check device id
-    const combinedLogs = this.log.transports.filter((transport) => {
-      return Array.isArray((transport as any).devices)
-    })
-
-    for (const log of combinedLogs) {
-      this.log.remove(log)
-    }
   }
   setVarByKey(key: string, value: number | string | number[], ts: number) {
     const { found, target } = setVarByKey(key, value)
@@ -590,13 +653,15 @@ export class SomeipLOG {
     vendor: string,
     instance: string,
     deviceId: string,
-    private event: EventEmitter
+    private event: EventEmitter,
+    private applicationId?: number
   ) {
     this.vendor = vendor
     this.deviceId = deviceId
     const et1 = externalTransport.map((t) => t.t())
+    const dt1 = deviceTransport.map((t) => t.t())
     this.log = createLogger({
-      transports: [new Base(), ...et1],
+      transports: [new Base(), ...et1, ...dt1],
       format: format.combine(
         format.json(),
         instanceFormat({ instance: instance }),
@@ -617,50 +682,18 @@ export class SomeipLOG {
 
     this.event.removeAllListeners()
   }
+
   someipBase(header: Buffer, data: Buffer, ts: number) {
     try {
-      const dataInfo: SomeipMessage = {
-        sending: false,
-        service: 0,
-        instance: 0,
-        method: 0,
-        client: 0,
-        session: 0,
-        protocolVersion: 0,
-        interfaceVersion: 0,
-        messageType: SomeipMessageType.UNKNOWN,
-        returnCode: 0,
-        payload: Buffer.from([]),
-        ts: ts
-      }
-      dataInfo.service = data.readUint16BE(0)
-      dataInfo.method = data.readUint16BE(2)
-      dataInfo.client = data.readUint16BE(8)
-      dataInfo.session = data.readUint16BE(10)
-      dataInfo.protocolVersion = data.readUint8(12)
-      dataInfo.interfaceVersion = data.readUint8(13)
-      dataInfo.messageType = data.readUint8(14)
-      dataInfo.returnCode = data.readUint8(15)
-      dataInfo.payload = data.subarray(16)
-
-      const protocolMap: Record<number, string> = {
-        0: 'local',
-        1: 'udp',
-        2: 'tcp',
-        3: 'unknown'
-      }
-      dataInfo.ip = header.readUint32BE(0).toString(16)
-      dataInfo.port = header.readUint16BE(4)
-      dataInfo.protocol = protocolMap[header.readUint8(6)] || 'unknown'
-      dataInfo.sending = header.readUint8(7) == 1
-      dataInfo.instance = header.readUint16BE(8)
-
       this.log.info({
         method: 'someipBase',
         deviceId: this.deviceId,
-        data: dataInfo
+        data: {
+          header,
+          data,
+          ts
+        }
       })
-      this.event.emit('someip-frame', dataInfo)
     } catch (e: any) {
       this.log.error({
         method: 'someipError',
@@ -673,15 +706,28 @@ export class SomeipLOG {
     }
   }
   someipMessage(message: SomeipMessage, sending: boolean, ts: number) {
+    const resolvedSending =
+      typeof (message as any).sending === 'boolean' ? (message as any).sending : sending === true
+    // if (
+    //   this.applicationId !== undefined &&
+    //   Number.isFinite(this.applicationId) &&
+    //   !resolvedSending &&
+    //   (message.client & 0xffff) === (this.applicationId & 0xffff)
+    // ) {
+    //   return
+    // }
     message.ts = ts
-    message.sending = sending
+    message.sending = resolvedSending
     message.payload = Buffer.from(message.payload)
-    this.log.info({
-      method: 'someipBase',
-      deviceId: this.deviceId,
-      data: message
-    })
+
     this.event.emit('someip-frame', message)
+    setTimeout(() => {
+      this.log.info({
+        method: 'someipBase',
+        deviceId: this.deviceId,
+        data: message
+      })
+    }, 0)
   }
   someipServiceValid(info: VsomeipAvailabilityInfo, ts: number) {
     this.log.info({
